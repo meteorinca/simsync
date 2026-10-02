@@ -1,0 +1,317 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SimSync - Motion Control</title>
+  <meta name="description" content="Real-time 3DOF motion simulator control, PID tuning, and telemetry dashboard.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+
+<!-- E-Stop border flash overlay -->
+<div id="estopOverlay"></div>
+
+<!-- ====== HEADER ====== -->
+<header id="header">
+  <div class="logo">SIMSYNC <span>/ 3DOF CONTROL</span></div>
+
+  <div id="pillSerial" class="pill off"><span class="dot"></span><span class="pill-text">SERIAL --</span></div>
+  <div id="pillUDP"    class="pill off"><span class="dot"></span><span class="pill-text">UDP --</span></div>
+  <div id="pillArmed"  class="pill warn"><span class="dot"></span><span class="pill-text">PAUSED</span></div>
+
+  <button id="estopBtn" title="Latch host motion pause / Clear">LATCH PAUSE</button>
+</header>
+
+<!-- ====== MAIN GRID ====== -->
+<div id="app">
+
+  <!-- =========== LEFT COLUMN =========== -->
+  <div id="mainLeft">
+
+    <!-- OSCILLOSCOPE -->
+    <div id="scopePanel">
+      <div id="scopeHeader">
+        <span id="scopeTitle">LIVE SCOPE</span>
+
+        <!-- Joint tabs -->
+        <div class="joint-tabs">
+          <button class="joint-tab active" data-joint="1">M1 Front L</button>
+          <button class="joint-tab" data-joint="2">M2 Front R</button>
+          <button class="joint-tab" data-joint="3">M3 Rear</button>
+        </div>
+
+        <!-- Time window -->
+        <div class="joint-tabs" style="margin-left:10px">
+          <button class="tw-btn active" data-s="5">5s</button>
+          <button class="tw-btn" data-s="10">10s</button>
+          <button class="tw-btn" data-s="30">30s</button>
+          <button class="tw-btn" data-s="60">60s</button>
+        </div>
+
+        <!-- Trace toggles -->
+        <div class="joint-tabs" style="margin-left:10px">
+          <button class="tw-btn active" data-trace="target" title="Target position">TGT</button>
+          <button class="tw-btn active" data-trace="actual" title="Actual position">ACT</button>
+          <button class="tw-btn active" data-trace="error"  title="Position error">ERR</button>
+          <button class="tw-btn"        data-trace="duty"   title="Motor duty">DUTY</button>
+        </div>
+      </div>
+
+      <canvas id="scopeCanvas"></canvas>
+
+      <div class="scope-legend">
+        <div class="legend-item"><div class="legend-swatch" style="background:#00e5ff"></div>Target</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#b57aff"></div>Actual</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#ffb830"></div>Error</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#39ff6b"></div>Duty</div>
+      </div>
+    </div>
+
+    <!-- JOINT STATUS CARDS -->
+    <div id="jointRow">
+      <!-- J1 -->
+      <div class="joint-card">
+        <div class="jc-header"><span>PITCH - J1</span><span id="j1Duty" class="monoval" style="color:var(--text-dim);font-size:9px"></span></div>
+        <div id="j1Actual" class="jc-actual">--.- counts</div>
+        <div id="j1Target" class="jc-target">TGT --.- counts</div>
+        <div id="j1Err"    class="jc-err">ERR --.- counts</div>
+        <div class="duty-bar">
+          <div id="j1DutyFwd" class="duty-fill fwd" style="width:0"></div>
+          <div id="j1DutyRev" class="duty-fill rev" style="width:0"></div>
+        </div>
+      </div>
+      <!-- J2 -->
+      <div class="joint-card">
+        <div class="jc-header"><span>ROLL - J2</span></div>
+        <div id="j2Actual" class="jc-actual">--.- counts</div>
+        <div id="j2Target" class="jc-target">TGT --.- counts</div>
+        <div id="j2Err"    class="jc-err">ERR --.- counts</div>
+        <div class="duty-bar">
+          <div id="j2DutyFwd" class="duty-fill fwd" style="width:0"></div>
+          <div id="j2DutyRev" class="duty-fill rev" style="width:0"></div>
+        </div>
+      </div>
+      <!-- J3 -->
+      <div class="joint-card">
+        <div class="jc-header"><span>HEAVE - J3</span></div>
+        <div id="j3Actual" class="jc-actual">--.- counts</div>
+        <div id="j3Target" class="jc-target">TGT --.- counts</div>
+        <div id="j3Err"    class="jc-err">ERR --.- counts</div>
+        <div class="duty-bar">
+          <div id="j3DutyFwd" class="duty-fill fwd" style="width:0"></div>
+          <div id="j3DutyRev" class="duty-fill rev" style="width:0"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TELEMETRY GAUGES -->
+    <div id="gaugeRow">
+      <div class="gauge-card">
+        <div class="gauge-label">Speed</div>
+        <div id="gSpeed" class="gauge-value cyan">--</div>
+        <div class="gauge-unit">km/h</div>
+      </div>
+      <div class="gauge-card">
+        <div class="gauge-label">G Lateral</div>
+        <div id="gGLat" class="gauge-value amber">--</div>
+        <div class="gauge-unit">g</div>
+      </div>
+      <div class="gauge-card">
+        <div class="gauge-label">G Long</div>
+        <div id="gGLong" class="gauge-value amber">--</div>
+        <div class="gauge-unit">g</div>
+      </div>
+      <div class="gauge-card">
+        <div class="gauge-label">Throttle</div>
+        <div id="gThrottle" class="gauge-value green">--%</div>
+        <div class="input-bar-wrap"><div id="throttleBar" class="input-bar-fill throttle" style="width:0"></div></div>
+      </div>
+      <div class="gauge-card">
+        <div class="gauge-label">Brake</div>
+        <div id="gBrake" class="gauge-value" style="color:var(--red)">--%</div>
+        <div class="input-bar-wrap"><div id="brakeBar" class="input-bar-fill brake" style="width:0"></div></div>
+      </div>
+      <div class="gauge-card">
+        <div class="gauge-label">Gear</div>
+        <div id="gGear" class="gauge-value purple">-</div>
+      </div>
+      <div class="gauge-card">
+        <div class="gauge-label">RPM</div>
+        <div id="gRPM" class="gauge-value">--k</div>
+        <div class="gauge-unit">rpm</div>
+      </div>
+      <div class="gauge-card">
+        <div class="gauge-label">Steer</div>
+        <div class="steer-bar-wrap" style="margin-top:6px">
+          <div class="steer-bar-center"></div>
+          <div id="steerFill" class="steer-bar-fill" style="width:0;left:50%"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP TEST RESULTS -->
+    <div class="panel">
+      <div class="panel-title">Step Test Results <span id="testRunning" class="running-indicator" style="display:none"></span></div>
+      <div class="table-scroll">
+        <table id="resultsTable">
+          <thead>
+            <tr>
+              <th>Kp</th><th>Kd</th><th>Rise</th><th>Overshoot</th><th>Settle</th><th>SS Err</th>
+            </tr>
+          </thead>
+          <tbody id="resultsBody">
+            <tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:16px">No step tests yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="btn-row">
+        <button id="exportBtn" class="btn btn-cyan">Export CSV</button>
+      </div>
+    </div>
+
+  </div><!-- /mainLeft -->
+
+  <!-- =========== STATUS BAR =========== -->
+  <div id="statusBar">
+    <span id="sbSerial" class="monoval">USB --</span>
+    <span class="sep">|</span>
+    <span id="sbUDP" class="monoval">UDP --</span>
+    <span class="sep">|</span>
+    <span id="sbSession" class="monoval">SAMPLES 0</span>
+    <span class="sep">|</span>
+    <span id="sbEStop">Host motion paused</span>
+  </div>
+
+  <!-- =========== RIGHT SIDEBAR =========== -->
+  <div id="sidebar">
+
+    <!-- SAFETY -->
+    <div class="sidebar-section">
+      <div class="panel-title">Host Motion Output</div><p style="font-size:11px;color:var(--text-dim)">Pause stops new targets. SMC3 keeps holding position. Use hardware power isolation to stop motors.</p>
+      <div class="btn-row" style="margin-bottom:8px">
+        <button id="armBtn" class="btn btn-green">RESUME</button>
+        <button id="disarmBtn" class="btn btn-amber">PAUSE</button>
+        <button id="estopClearBtn" class="btn btn-red">CLEAR PAUSE</button>
+      </div>
+    </div>
+
+    <!-- DIRECT ANGLE -->
+    <div class="sidebar-section">
+      <div class="panel-title">Direct Position</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+        <select id="manJoint" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:4px 6px;font-size:11px">
+          <option value="1">M1 Front L</option>
+          <option value="2">M2 Front R</option>
+          <option value="3">M3 Rear</option>
+        </select>
+        <input id="manPosition" type="number" value="512" step="1" min="0" max="1023"
+          style="background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:4px 8px;font-family:var(--mono);font-size:11px;width:70px">
+        <button id="manGoBtn" class="btn btn-cyan">GO</button>
+      </div>
+      <div class="btn-row">
+        <button id="stepMinus10" class="btn btn-purple">-10 counts</button>
+        <button id="stepMinus5"  class="btn btn-purple">-5 counts</button>
+        <button id="stepPlus5"   class="btn btn-cyan">+5 counts</button>
+        <button id="stepPlus10"  class="btn btn-cyan">+10 counts</button>
+        <button id="centerBtn"   class="btn btn-amber">CENTER</button>
+      </div>
+    </div>
+
+    <!-- PID TUNING -->
+    <div class="sidebar-section">
+      <div class="panel-title">PID Gains (all motors)</div><p style="font-size:11px;color:var(--text-dim)">Reads Motor 1 gains; Send Live applies to all three motors. Set travel limits and PWM in SMC3Utils first.</p>
+
+      <div class="pid-row">
+        <span class="pid-label">Kp</span>
+        <input id="kpSlider" class="pid-slider" type="range" min="0.1" max="30" step="0.1" value="8.5">
+        <input id="kpNum" class="pid-num" type="number" min="0.1" max="30" step="0.1" value="8.50">
+      </div>
+      <div class="pid-row">
+        <span class="pid-label" style="color:var(--amber)">Ki</span>
+        <input id="kiSlider" class="pid-slider ki" type="range" min="0" max="2" step="0.01" value="0.2">
+        <input id="kiNum" class="pid-num" type="number" min="0" max="2" step="0.01" value="0.20">
+      </div>
+      <div class="pid-row">
+        <span class="pid-label" style="color:var(--purple)">Kd</span>
+        <input id="kdSlider" class="pid-slider kd" type="range" min="0" max="5" step="0.05" value="1.2">
+        <input id="kdNum" class="pid-num" type="number" min="0" max="5" step="0.05" value="1.20">
+      </div>
+
+      <div class="btn-row" style="margin-top:4px">
+        <button id="pidSendBtn" class="btn btn-cyan">Send Live</button>
+        <button id="pidSaveBtn" class="btn btn-green">Save to EEPROM</button>
+      </div>
+    </div>
+
+    <!-- STEP TEST LAUNCHER -->
+    <div class="sidebar-section">
+      <div class="panel-title">Step Test</div>
+
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+        <select id="stepJoint" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:4px 6px;font-size:11px">
+          <option value="1">M1 Front L</option>
+          <option value="2">M2 Front R</option>
+          <option value="3">M3 Rear</option>
+        </select>
+        <label style="font-size:10px;color:var(--text-dim)">Step</label>
+        <input id="stepSize" type="number" value="15" step="1" min="2" max="40"
+          style="background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:4px 8px;font-family:var(--mono);font-size:11px;width:55px">
+        <span style="font-size:9px;color:var(--text-dim)">counts</span>
+      </div>
+
+      <div class="btn-row" style="margin-bottom:10px">
+        <button id="stepTestBtn" class="btn btn-cyan">Run Step Test</button>
+      </div>
+
+      <div class="panel-title" style="margin-bottom:6px">Kp/Kd Grid Sweep</div>
+      <div class="sweep-grid">
+        <div class="sweep-field"><label>Kp Min</label><input id="kpMin" type="number" value="4"   step="0.5" min="0.1"></div>
+        <div class="sweep-field"><label>Kp Max</label><input id="kpMax" type="number" value="14"  step="0.5"></div>
+        <div class="sweep-field"><label>Kd Min</label><input id="kdMin" type="number" value="0.5" step="0.1" min="0"></div>
+        <div class="sweep-field"><label>Kd Max</label><input id="kdMax" type="number" value="3.0" step="0.1"></div>
+        <div class="sweep-field"><label>Ki</label>     <input id="sweepKi"    type="number" value="0.2" step="0.01"></div>
+        <div class="sweep-field"><label>Grid Steps</label><input id="sweepSteps" type="number" value="4" step="1" min="2" max="8"></div>
+      </div>
+      <button id="sweepBtn" class="btn btn-purple" style="width:100%">Run Sweep</button>
+    </div>
+
+    <!-- MOTION MAPPING -->
+    <div class="sidebar-section">
+      <div class="panel-title">Motion Mapping</div>
+
+      <div class="mcfg-row">
+        <span class="mcfg-label">Pitch Gain</span>
+        <input id="pitchGain" class="mcfg-slider" type="range" min="0" max="30" step="0.5" value="12">
+        <span id="pitchGainVal" class="mcfg-val">12.0</span>
+      </div>
+      <div class="mcfg-row">
+        <span class="mcfg-label">Roll Gain</span>
+        <input id="rollGain" class="mcfg-slider" type="range" min="0" max="30" step="0.5" value="10">
+        <span id="rollGainVal" class="mcfg-val">10.0</span>
+      </div>
+      <div class="mcfg-row">
+        <span class="mcfg-label">Heave Gain</span>
+        <input id="heaveGain" class="mcfg-slider" type="range" min="0" max="20" step="0.5" value="8">
+        <span id="heaveGainVal" class="mcfg-val">8.0</span>
+      </div>
+      <div class="mcfg-row">
+        <span class="mcfg-label">Filter Hz</span>
+        <input id="filterHz" class="mcfg-slider" type="range" min="1" max="50" step="1" value="15">
+        <span id="filterHzVal" class="mcfg-val">15.0</span>
+      </div>
+
+      <button id="motionSendBtn" class="btn btn-cyan" style="width:100%;margin-top:4px">Apply</button>
+    </div>
+
+  </div><!-- /sidebar -->
+
+</div><!-- /app -->
+
+<script src="/js/plots.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>

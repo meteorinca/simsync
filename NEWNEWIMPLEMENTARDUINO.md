@@ -1,0 +1,1 @@
+switched to smc3.ino
