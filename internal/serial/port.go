@@ -175,10 +175,11 @@ func (p *Port) loop() {
 				}
 				continue
 			}
+			log.Printf("[serial] auto-selected Arduino USB serial candidate on %s; awaiting SMC3 confirmation", name)
 		}
 		sp, err := goserial.Open(name, &goserial.Mode{BaudRate: p.baud})
 		if err != nil {
-			log.Printf("[serial] %v", err)
+			log.Printf("[serial] open Arduino candidate %s failed: %v; retrying", name, err)
 			if !p.retry() {
 				return
 			}
@@ -254,6 +255,9 @@ func (p *Port) parseFrame(f []byte) {
 	p.mu.Lock()
 	id := f[1]
 	if id == 'v' && binary.BigEndian.Uint16(f[2:4]) == 70 {
+		if !p.ready {
+			log.Printf("[serial] confirmed Arduino SMC3 firmware 0.70 at %d baud", p.baud)
+		}
 		p.ready = true
 	}
 	if id == 'v' || (id >= 'A' && id <= 'C') || (id >= 'a' && id <= 'c') {

@@ -49,7 +49,7 @@ Motion starts paused. Stale game telemetry stops new game targets; serial feedba
 
 | Flag | Default | Purpose |
 |---|---|---|
-| --serial | auto | Uno port; automatic selection requires exactly one serial port |
+| --serial | auto | Prefer Uno USB identity; a single USB adapter is allowed for clones; ambiguous candidates require an explicit port |
 | --baud | 500000 | Must match the sketch |
 | --no-udp | false | Bench mode |
 | --no-serial | false | Dashboard only |

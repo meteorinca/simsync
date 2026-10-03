@@ -1,4 +1,4 @@
-﻿/* ============================================================
+/* ============================================================
    SimSync - Dashboard Core
    WebSocket client, telemetry gauges, safety controls, PID panel
    ============================================================ */
@@ -18,6 +18,7 @@
     gThrottle: $('gThrottle'), gBrake: $('gBrake'), gGear: $('gGear'), gRPM: $('gRPM'),
     throttleBar: $('throttleBar'), brakeBar: $('brakeBar'),
     steerFill: $('steerFill'),
+
 
     // Joint cards
     j1Actual: $('j1Actual'), j1Target: $('j1Target'), j1Err: $('j1Err'),
@@ -181,6 +182,7 @@
       if (fwd) { fwd.style.width = '0'; }
     }
   }
+
 
   /* ---- e-stop ---- */
   function updateEStop(f) {

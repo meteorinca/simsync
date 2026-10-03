@@ -2,17 +2,46 @@ package serial
 
 import (
 	"fmt"
-	goserial "go.bug.st/serial"
+	"strings"
+
+	"go.bug.st/serial/enumerator"
 )
 
-// Require an explicit choice when multiple serial devices are present.
+// Prefer Uno USB identities, with a single USB adapter fallback for clones.
+// The connection still must answer the SMC3 version probe before becoming ready.
 func ScanForController() (string, error) {
-	ports, err := goserial.GetPortsList()
+	ports, err := enumerator.GetDetailedPortsList()
 	if err != nil {
 		return "", err
 	}
-	if len(ports) != 1 {
-		return "", fmt.Errorf("found %d ports; select the Uno with --serial COMx", len(ports))
+	return selectArduinoPort(ports)
+}
+
+func selectArduinoPort(ports []*enumerator.PortDetails) (string, error) {
+	var unos, usb []string
+	for _, p := range ports {
+		if p == nil || !p.IsUSB || p.Name == "" {
+			continue
+		}
+		usb = append(usb, p.Name)
+		vid, pid := strings.ToUpper(p.VID), strings.ToUpper(p.PID)
+		// Arduino AVR boards.txt lists these Uno identities.
+		if (vid == "2341" && (pid == "0001" || pid == "0043" || pid == "0243" || pid == "006A")) ||
+			(vid == "2A03" && pid == "0043") {
+			unos = append(unos, p.Name)
+		}
 	}
-	return ports[0], nil
+	if len(unos) == 1 {
+		return unos[0], nil
+	}
+	if len(unos) > 1 {
+		return "", fmt.Errorf("multiple Arduino Uno ports (%s); select one with --serial COMx", strings.Join(unos, ", "))
+	}
+	if len(usb) == 1 {
+		return usb[0], nil
+	}
+	if len(usb) > 1 {
+		return "", fmt.Errorf("multiple USB serial candidates (%s); select the Arduino with --serial COMx", strings.Join(usb, ", "))
+	}
+	return "", fmt.Errorf("no Arduino USB serial candidate found; connect the Uno or specify --serial COMx")
 }

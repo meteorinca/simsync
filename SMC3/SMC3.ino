@@ -1,5 +1,5 @@
 //****************************************************************************************************************
-// SMC3.ini is basic Motor PID driver designed for motion simulators with upto 3 motors (written for UNO R3)
+// SMC3.ino is basic Motor PID driver designed for motion simulators with upto 3 motors (written for UNO R3)
 //          
 //****************************************************************************************************************
 
@@ -7,7 +7,18 @@
 // Set to MODE2 for a 43A "Chinese" IBT-2 H-Bridge from e-bay or equiv
 
 // #define MODE1    
-#define MODE2    
+#define MODE2    // Default for this rig: Uno R3 + IBT-2/BTS7960.
+
+#if defined(MODE1) == defined(MODE2)
+#error "Select exactly one motor driver mode: MODE1 or MODE2."
+#endif
+
+// MODE2 wiring (see pinguide.md):
+// Motor 1: D2 -> RPWM, D9 -> LPWM, D3 -> both R_EN and L_EN, pot -> A0.
+// Motor 2: D4 -> RPWM, D10 -> LPWM, D5 -> both R_EN and L_EN, pot -> A1.
+// Motor 3: D6 -> RPWM, D11 -> LPWM, D7 -> both R_EN and L_EN, pot -> A2.
+// USB hardware serial: 500000 baud. Motors are enabled at firmware startup.
+
 
 // Uncomment the following line to reverse the direction of Motor 1.
 
@@ -25,8 +36,8 @@
 
 //    COMMAND SET:
 //
-//    []              		Drive all motors to defined stop positions and hold there
-//    [Axx],[Bxx],[Cxx]         Send position updates for Motor 1,2,3 where xx is the binary position limitted to range 0-1024
+//    Commands are fixed five-byte frames: start, command, two data bytes, end.
+//    [Axx],[Bxx],[Cxx]         Send position updates for Motor 1,2,3 where xx is the binary position limitted to range 0-1023
 //    [Dxx],[Exx],[Fxx]		Send the Kp parameter for motor 1,2,3 where xx is the Kp value multiplied by 100
 //    [Gxx],[Hxx],[Ixx]		Send the Ki parameter for motor 1,2,3 where xx is the Ki value multiplied by 100
 //    [Jxx],[Kxx],[Lxx]		Send the Kd parameter for motor 1,2,3 where xx is the Kd value multiplied by 100
@@ -350,7 +361,7 @@ void DisableMotor3();
 
 void setup()
 {
-    Serial.begin(500000);     //115200
+    Serial.begin(500000);     // Must match SimSync --baud (default 500000).
     // set the data rate for the SoftwareSerial port
 #ifdef SECOND_SERIAL
     mySerial.begin(115200);  
@@ -1653,7 +1664,7 @@ void loop()
             // Check and Update Motor 2 drive
 
             Feedback2 = analogRead(FeedbackPin2);
-            if ((Feedback2 > CutoffLimitMax2) || (Feedback2 < CutoffLimitMin1)) { DisableMotor2(); } 
+            if ((Feedback2 > CutoffLimitMax2) || (Feedback2 < CutoffLimitMin2)) { DisableMotor2(); } 
             PWMout2=CalcMotor2PID(Target2,Feedback2);
             if (Disable2==0) 
             { 
@@ -1667,7 +1678,7 @@ void loop()
             // Check and Update Motor 3 drive
 
             Feedback3 = analogRead(FeedbackPin3);
-            if ((Feedback3 > CutoffLimitMax3) || (Feedback3 < CutoffLimitMin1)) { DisableMotor3(); } 
+            if ((Feedback3 > CutoffLimitMax3) || (Feedback3 < CutoffLimitMin3)) { DisableMotor3(); } 
             PWMout3=CalcMotor3PID(Target3,Feedback3);
             if (Disable3==0) 
             { 
