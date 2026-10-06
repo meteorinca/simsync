@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/meteorinca/simsync/internal/serial"
 	"net/http"
 	"strconv"
 	"time"
@@ -13,14 +14,21 @@ type Deps struct {
 	GetSessionSamples func(n int) interface{}
 	ExportSessionCSV  func(w http.ResponseWriter)
 	GetPID            func() (kp, ki, kd float32)
-	SetPID            func(kp, ki, kd float32) error
+	SetPID            func(joint int, kp, ki, kd float32) error
+	GetMotors         func() interface{}
+	ConfigureMotor    func(int, serial.MotorSettings) error
+	EnableMotor       func(int) error
+	JogMotor          func(int, int, int) error
+	StopJog           func() error
+	Diagnostics       func(bool) error
+	CancelTest        func()
+	TestRunning       func() bool
 	SavePID           func() error
 	SetTarget         func(joint int, angle float32) error
 	Arm               func(state bool) error
 	EStop             func(trip bool) error
 	ClearEStop        func() error
 	RunStepTest       func(joint int, kp, ki, kd, stepSize float32) error
-	RunSweep          func(joint int, kpMin, kpMax, kdMin, kdMax float32, steps int, ki, stepSize float32)
 	GetStepResults    func() interface{}
 	GetMotionConfig   func() interface{}
 	SetMotionConfig   func(body []byte) error
@@ -99,7 +107,8 @@ func (h *Handlers) PID(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := h.d.SetPID(kp, ki, kd); err != nil {
+	joint, _ := strconv.Atoi(r.URL.Query().Get("joint"))
+	if err := h.d.SetPID(joint, kp, ki, kd); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -165,19 +174,20 @@ func (h *Handlers) StepTest(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	joint, _ := strconv.Atoi(q.Get("joint"))
 	if joint < 1 || joint > 3 {
-		joint = 1
+		writeErr(w, 400, "motor 1-3 required")
+		return
 	}
 	kp, ki, kd, err := parsePIDParams(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	stepSize := float32(15.0)
-	if s := q.Get("step"); s != "" {
-		if v, err2 := strconv.ParseFloat(s, 32); err2 == nil {
-			stepSize = float32(v)
-		}
+	v, err := strconv.ParseFloat(q.Get("step"), 32)
+	if err != nil {
+		writeErr(w, 400, "valid step required")
+		return
 	}
+	stepSize := float32(v)
 	if err := h.d.RunStepTest(joint, kp, ki, kd, stepSize); err != nil {
 		writeErr(w, http.StatusConflict, err.Error())
 		return
@@ -185,27 +195,86 @@ func (h *Handlers) StepTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{"ok": true, "joint": joint, "kp": kp, "ki": ki, "kd": kd, "step": stepSize})
 }
 
-// Sweep launches a Kp/Kd grid sweep.
+// Sweep preserves the old route without exposing unbounded automated tuning.
 func (h *Handlers) Sweep(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	joint, _ := strconv.Atoi(q.Get("joint"))
-	if joint < 1 || joint > 3 {
-		joint = 1
+	writeErr(w, http.StatusGone, "use individual bounded step tests")
+}
+
+func (h *Handlers) Motors(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		writeJSON(w, h.d.GetMotors())
+		return
 	}
-	kpMin, _ := strconv.ParseFloat(q.Get("kp_min"), 32)
-	kpMax, _ := strconv.ParseFloat(q.Get("kp_max"), 32)
-	kdMin, _ := strconv.ParseFloat(q.Get("kd_min"), 32)
-	kdMax, _ := strconv.ParseFloat(q.Get("kd_max"), 32)
-	ki, _ := strconv.ParseFloat(q.Get("ki"), 32)
-	steps, _ := strconv.Atoi(q.Get("steps"))
-	stepSize, _ := strconv.ParseFloat(q.Get("step"), 32)
-	if steps < 2 {
-		steps = 4
+	var body struct {
+		Joint    int                  `json:"joint"`
+		Settings serial.MotorSettings `json:"settings"`
 	}
-	if stepSize == 0 {
-		stepSize = 15
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+		writeErr(w, 400, "invalid settings")
+		return
 	}
-	go h.d.RunSweep(joint, float32(kpMin), float32(kpMax), float32(kdMin), float32(kdMax), steps, float32(ki), float32(stepSize))
+	if err := h.d.ConfigureMotor(body.Joint, body.Settings); err != nil {
+		writeErr(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *Handlers) MotorEnable(w http.ResponseWriter, r *http.Request) {
+	j, _ := strconv.Atoi(r.URL.Query().Get("joint"))
+	if err := h.d.EnableMotor(j); err != nil {
+		writeErr(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *Handlers) Jog(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Joint    int `json:"joint"`
+		PWM      int `json:"pwm"`
+		Duration int `json:"duration_ms"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&b); err != nil {
+		writeErr(w, 400, "invalid jog request")
+		return
+	}
+	if err := h.d.JogMotor(b.Joint, b.PWM, b.Duration); err != nil {
+		writeErr(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *Handlers) JogStop(w http.ResponseWriter, r *http.Request) {
+	if err := h.d.StopJog(); err != nil {
+		writeErr(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *Handlers) Diagnostics(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&b); err != nil {
+		writeErr(w, 400, "invalid diagnostics request")
+		return
+	}
+	if err := h.d.Diagnostics(b.Enabled); err != nil {
+		writeErr(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *Handlers) TestStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]bool{"running": h.d.TestRunning()})
+}
+
+func (h *Handlers) TestCancel(w http.ResponseWriter, r *http.Request) {
+	h.d.CancelTest()
 	writeJSON(w, map[string]bool{"ok": true})
 }
 

@@ -8,7 +8,7 @@
   var canvas = document.getElementById('scopeCanvas');
   var ctx = canvas.getContext('2d');
 
-  var WINDOW_S = 10;   // seconds visible
+  var WINDOW_S = 5;   // seconds visible
   var MAX_POINTS = 6000;
   var activeJoint = 1;
 
@@ -22,7 +22,7 @@
     duty:   '#39ff6b',
   };
 
-  var showTraces = { target: true, actual: true, error: true, duty: false };
+  var showTraces = { target: true, actual: true, error: false, duty: false };
 
   /* Public API */
   window.Scope = {
@@ -38,14 +38,19 @@
   };
 
   function resize() {
-    var rect = canvas.parentElement.getBoundingClientRect();
-    canvas.width = rect.width;
-    canvas.height = 200;
+    var rect = canvas.getBoundingClientRect();
+    var ratio = window.devicePixelRatio || 1;
+    canvas.width = Math.round(rect.width * ratio);
+    canvas.height = Math.round(rect.height * ratio);
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   }
 
-  function draw() {
+  var lastDraw = 0;
+  function draw(stamp) {
     requestAnimationFrame(draw);
-    var W = canvas.width, H = canvas.height;
+    if (document.hidden || stamp-lastDraw < 33) return;
+    lastDraw=stamp || 0;
+    var W = canvas.clientWidth, H = canvas.clientHeight;
     if (W === 0) { resize(); return; }
 
     ctx.clearRect(0, 0, W, H);
@@ -74,7 +79,7 @@
 
     var windowMs = WINDOW_S * 1000;
     var cutoff = now - windowMs;
-    var visible = buf.filter(function (s) { return s.t >= cutoff; });
+    var visible = buf.filter(function (s) { return s.t >= cutoff; }).map(function (s) { return {t:s.t, target:Angles.value(activeJoint,s.target), actual:Angles.value(activeJoint,s.actual), error:Angles.value(activeJoint,s.error,true), duty:s.duty}; });
     if (visible.length < 2) return;
 
     // Determine Y range from active traces
@@ -117,7 +122,7 @@
 
     // Duty as shaded area (green, secondary)
     if (showTraces.duty) {
-      var dutyMax = 819;
+      var dutyMax = 255;
       ctx.fillStyle = 'rgba(57,255,107,0.12)';
       ctx.beginPath();
       var first = true;
@@ -146,13 +151,26 @@
       ctx.setLineDash([]);
     }
 
-    // Cursor readout (right edge)
+    // Numeric axes use the same per-motor angle calibration as the traces.
+    ctx.font = '10px monospace';
+    ctx.fillStyle = '#7a8699';
+    ctx.textAlign = 'right';
+    for (var tick=1; tick<gridLines; tick++) {
+      var value=yMax-(yMax-yMin)*tick/gridLines;
+      ctx.fillText(value.toFixed(1)+Angles.unit(activeJoint),W-8,H*tick/gridLines-5);
+    }
+    ctx.textAlign = 'left';
+    for (var tick=1; tick<timeGrids; tick++) {
+      ctx.fillText('-'+(WINDOW_S*(1-tick/timeGrids)).toFixed(0)+'s',W*tick/timeGrids+4,H-6);
+    }
+
+    // Cursor readout
     var last = visible[visible.length - 1];
     if (last) {
       var labels = [];
-      if (showTraces.actual) labels.push({ label: 'ACT', val: last.actual.toFixed(1) + ' counts', color: colors.actual });
-      if (showTraces.target) labels.push({ label: 'TGT', val: last.target.toFixed(1) + ' counts', color: colors.target });
-      if (showTraces.error)  labels.push({ label: 'ERR', val: last.error.toFixed(2) + ' counts',  color: colors.error });
+      if (showTraces.actual) labels.push({ label: 'ACT', val: last.actual.toFixed(1) + Angles.unit(activeJoint), color: colors.actual });
+      if (showTraces.target) labels.push({ label: 'TGT', val: last.target.toFixed(1) + Angles.unit(activeJoint), color: colors.target });
+      if (showTraces.error)  labels.push({ label: 'ERR', val: last.error.toFixed(2) + Angles.unit(activeJoint),  color: colors.error });
       ctx.font = '10px JetBrains Mono, monospace';
       var ry = 14;
       labels.forEach(function (l) {
@@ -163,6 +181,7 @@
     }
   }
 
+  if (window.ResizeObserver) new ResizeObserver(resize).observe(canvas);
   window.addEventListener('resize', resize);
   resize();
   draw();

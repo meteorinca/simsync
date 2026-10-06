@@ -19,19 +19,27 @@ type JointTelemetry struct {
 }
 type TelemetryHandler func(JointTelemetry)
 type Port struct {
-	mu        sync.Mutex
-	portName  string
-	baud      int
-	port      goserial.Port
-	handler   TelemetryHandler
-	stopCh    chan struct{}
-	once      sync.Once
-	ready     bool
-	lastReply time.Time
-	joints    [3]JointTelemetry
-	seen      [3]time.Time
-	gains     [3]float32
-	disabled  byte
+	mu             sync.Mutex
+	portName       string
+	baud           int
+	port           goserial.Port
+	handler        TelemetryHandler
+	stopCh         chan struct{}
+	once           sync.Once
+	ready          bool
+	lastReply      time.Time
+	joints         [3]JointTelemetry
+	seen           [3]time.Time
+	gains          [3]float32
+	disabled       byte
+	settings       [3]MotorSettings
+	settingsSeen   [3]time.Time
+	settingsMask   [3]byte
+	autoConfigured bool
+	jogSupported   bool
+	jogUntil       time.Time
+	jogMotor       int
+	diagnostics    bool
 }
 
 func New(name string, baud int, handler TelemetryHandler) *Port {
@@ -47,6 +55,9 @@ func (p *Port) Stop() {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		if p.port != nil {
+			if p.jogSupported {
+				_ = p.writeLocked([]byte("[stp]"))
+			}
 			p.port.Close()
 		}
 		p.ready = false
@@ -75,8 +86,17 @@ func (p *Port) writeLocked(data []byte) error {
 func (p *Port) SendTargets(a, b, c float32) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.jogActiveLocked() {
+		return fmt.Errorf("open-loop jog running")
+	}
 	var data []byte
 	for i, v := range []float32{a, b, c} {
+		if !p.settings[i].Active {
+			continue
+		}
+		if err := p.checkTargetLocked(i+1, v); err != nil {
+			return err
+		}
 		if !validPosition(v) {
 			return fmt.Errorf("target must be 0-1023 ADC counts")
 		}
@@ -93,6 +113,9 @@ func (p *Port) SetTarget(j int, v float32) error {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if err := p.checkTargetLocked(j, v); err != nil {
+		return err
+	}
 	if p.disabled&(1<<uint(j-1)) != 0 {
 		return fmt.Errorf("motor %d disabled by SMC3; check limits in SMC3Utils", j)
 	}
@@ -111,6 +134,9 @@ func (p *Port) SetPID(kp, ki, kd float32) error {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.jogActiveLocked() {
+		return fmt.Errorf("open-loop jog running")
+	}
 	if err := p.writeLocked(data); err != nil {
 		return err
 	}
@@ -125,6 +151,9 @@ func (p *Port) PID() (float32, float32, float32) {
 func (p *Port) SavePID() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.jogActiveLocked() {
+		return fmt.Errorf("open-loop jog running")
+	}
 	return p.writeLocked([]byte("[sav]"))
 }
 func (p *Port) Actual(j int) (float32, error) {
@@ -185,7 +214,7 @@ func (p *Port) loop() {
 			}
 			continue
 		}
-		sp.SetReadTimeout(100 * time.Millisecond)
+		sp.SetReadTimeout(5 * time.Millisecond)
 		// An Uno may reset on open. Wait for its bootloader.
 		select {
 		case <-p.stopCh:
@@ -197,6 +226,15 @@ func (p *Port) loop() {
 		p.port = sp
 		p.ready = false
 		p.seen = [3]time.Time{}
+		p.settingsMask = [3]byte{}
+		p.autoConfigured = false
+		p.jogSupported = false
+		p.diagnostics = false
+		p.jogUntil = time.Time{}
+		for i := range p.settings {
+			p.settings[i].Configured = false
+			p.settings[i].Active = false
+		}
 		p.mu.Unlock()
 		log.Printf("[serial] probing SMC3 on %s at %d baud", name, p.baud)
 		p.readLoop(sp)
@@ -214,6 +252,8 @@ func (p *Port) readLoop(sp goserial.Port) {
 	var pending []byte
 	buf := make([]byte, 256)
 	lastPoll := time.Time{}
+	settingsQueries := []string{"[ver]", "[cap]", "[rdD]", "[rdE]", "[rdF]", "[rdG]", "[rdH]", "[rdI]", "[rdJ]", "[rdK]", "[rdL]", "[rdP]", "[rdQ]", "[rdR]", "[rdS]", "[rdT]", "[rdU]", "[rdV]", "[rdW]", "[rdX]"}
+	settingsCursor := 0
 	started := time.Now()
 	for {
 		select {
@@ -223,7 +263,13 @@ func (p *Port) readLoop(sp goserial.Port) {
 		}
 		if time.Since(lastPoll) >= 20*time.Millisecond {
 			p.mu.Lock()
-			_, err := sp.Write([]byte("[ver][rdA][rda][rdB][rdb][rdC][rdc][rdD][rdG][rdJ]"))
+			query := "[rdA][rda][rdB][rdb][rdC][rdc]"
+			// Keep requests below the Uno's 64-byte serial receive buffer.
+			for n := 0; n < 3; n++ {
+				query += settingsQueries[settingsCursor]
+				settingsCursor = (settingsCursor + 1) % len(settingsQueries)
+			}
+			_, err := sp.Write([]byte(query))
 			p.mu.Unlock()
 			if err != nil {
 				return
@@ -243,6 +289,7 @@ func (p *Port) readLoop(sp goserial.Port) {
 			p.parseFrame(pending[:5])
 			pending = pending[5:]
 		}
+		p.autoConfigureBench()
 		p.mu.Lock()
 		stale := time.Since(p.lastReply) > time.Second
 		p.mu.Unlock()
@@ -251,9 +298,68 @@ func (p *Port) readLoop(sp goserial.Port) {
 		}
 	}
 }
+
+// autoConfigureBench makes the first controller channel immediately usable for
+// an unmounted bench rig. The startup profile replaces legacy EEPROM settings
+// in RAM once per connection, with Ki zero and the requested 50-650 bounds.
+func (p *Port) autoConfigureBench() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.autoConfigured || !p.ready || p.settingsMask[0] != 63 || time.Since(p.settingsSeen[0]) > 2*time.Second || time.Since(p.seen[0]) > 250*time.Millisecond {
+		return
+	}
+	s := BenchDefaults()
+	if err := s.Validate(); err != nil {
+		return
+	}
+	data := pidFrames(1, s.Kp, s.Ki, s.Kd)
+	data = append(data, frame('P', uint16(s.PWMMin<<8|s.PWMMax))...)
+	data = append(data, frame('S', uint16(s.Cutoff<<8|s.Clip))...)
+	data = append(data, frame('V', uint16(s.Deadzone<<8|s.PWMRev))...)
+	if err := p.writeLocked(data); err != nil {
+		return
+	}
+	p.settings[0] = s
+	p.settings[0].Configured = true
+	p.autoConfigured = true
+}
 func (p *Port) parseFrame(f []byte) {
 	p.mu.Lock()
 	id := f[1]
+	if id == 'q' {
+		p.jogSupported = binary.BigEndian.Uint16(f[2:4])&1 != 0
+	}
+	if id >= 'D' && id <= 'L' {
+		i, g := int(id-'D')%3, int(id-'D')/3
+		v := float32(binary.BigEndian.Uint16(f[2:4])) / 100
+		switch g {
+		case 0:
+			p.settings[i].Kp = v
+		case 1:
+			p.settings[i].Ki = v
+		case 2:
+			p.settings[i].Kd = v
+		}
+		p.settingsMask[i] |= 1 << uint(g)
+		p.settingsSeen[i] = time.Now()
+	}
+	if id >= 'P' && id <= 'X' {
+		i, g := int(id-'P')%3, int(id-'P')/3
+		s := &p.settings[i]
+		switch g {
+		case 0:
+			s.PWMMin = int(f[2])
+			s.PWMMax = int(f[3])
+		case 1:
+			s.Cutoff = int(f[2])
+			s.Clip = int(f[3])
+		case 2:
+			s.Deadzone = int(f[2])
+			s.PWMRev = int(f[3])
+		}
+		p.settingsMask[i] |= 1 << uint(g+3)
+		p.settingsSeen[i] = time.Now()
+	}
 	if id == 'v' && binary.BigEndian.Uint16(f[2:4]) == 70 {
 		if !p.ready {
 			log.Printf("[serial] confirmed Arduino SMC3 firmware 0.70 at %d baud", p.baud)

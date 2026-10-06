@@ -2,7 +2,7 @@
 
 **Controller:** Arduino Uno R3 (ATmega328P, 5V logic)  
 **Drivers:** three IBT-2 / BTS7960 modules  
-**Firmware:** [SMC3.ino](SMC3.ino), MODE2 enabled  
+**Firmware:** [SMC3.ino](SMC3/SMC3.ino), MODE2 enabled
 **USB serial:** 500,000 baud  
 **Feedback:** three 10k potentiometers, one per motor
 
@@ -12,9 +12,9 @@ Read the printed labels on each IBT-2. Header orientation varies between modules
 
 | IBT-2 terminal | Motor 1: front left | Motor 2: front right | Motor 3: rear |
 |---|---|---|---|
-| **RPWM / IN1** | Uno **D2** | Uno **D4** | Uno **D6** |
+| **RPWM / IN1** | Uno **D5** | Uno **D4** | Uno **D6** |
 | **LPWM / IN2** | Uno **D9** | Uno **D10** | Uno **D11** |
-| **R_EN + L_EN** | Tie together to **D3** | Tie together to **D5** | Tie together to **D7** |
+| **R_EN + L_EN** | Tie together to **D3** | Tie together to **D8** | Tie together to **D7** |
 | VCC (logic) | Uno 5V | Uno 5V | Uno 5V |
 | GND (logic) | Common ground | Common ground | Common ground |
 | R_IS / L_IS | Leave unconnected | Leave unconnected | Leave unconnected |
@@ -30,7 +30,7 @@ The signal mapping agrees with the supplied sketch and [SMC3 author RufusDufus's
 ## One motor, at a glance
 
 ```text
-Uno D2  ------------------ IBT-2 RPWM
+Uno D5  ------------------ IBT-2 RPWM
 Uno D9  ------------------ IBT-2 LPWM
 Uno D3  --------+--------- IBT-2 R_EN
                 +--------- IBT-2 L_EN
@@ -61,7 +61,7 @@ Repeat using the Motor 2 and Motor 3 columns above. Confirm the pot wiper with a
 | Uno pin | Use in this sketch |
 |---|---|
 | D0 / D1 | Hardware UART used by USB serial; leave free |
-| D8 | PID timing diagnostic; leave free |
+| D2 | Unused |
 | D12 / D13 | Optional second serial, disabled by default; leave free |
 | A3 / A4 | Unused |
 | A5 | Optional motion scaler, disabled by default; leave unconnected |
@@ -70,7 +70,7 @@ Repeat using the Motor 2 and Motor 3 columns above. Confirm the pot wiper with a
 ## Upload checklist
 
 1. Keep **24V motor power off** while wiring, uploading and checking feedback.
-2. Open [SMC3.ino](SMC3.ino) in Arduino IDE. Accept its request to move the sketch into a folder named **SMC3**, if prompted. Arduino expects **SMC3/SMC3.ino**.
+2. Open [SMC3.ino](SMC3/SMC3.ino) in Arduino IDE. Accept its request to move the sketch into a folder named **SMC3**, if prompted. Arduino expects **SMC3/SMC3.ino**.
 3. Select **Arduino Uno** from the Arduino AVR Boards package and the Uno's COM port. The standard EEPROM and SoftwareSerial libraries come with the AVR core.
 4. Confirm the top of the sketch has **MODE2 enabled** and MODE1 commented out. Leave SECOND_SERIAL, both pot-scaling options and REVERSE_MOTOR1 commented out for the initial test.
 5. Close SimSync, SMC3Utils and Serial Monitor before Verify/Upload. These applications share the same serial port.
@@ -89,9 +89,9 @@ Uploading does **not normally erase EEPROM**. Existing SMC3 PID, PWM and travel 
    Substitute the Uno's COM port. Use one application at a time.
 2. Move each feedback pot gently and confirm the corresponding motor's feedback moves smoothly. Establish center and travel limits in SMC3Utils before powered tests.
 3. Test one unloaded motor at a time with conservative PWM and gains. With power off between changes, correct motor/feedback direction so a small target change makes actual position approach the target. If it moves away, cut motor power immediately; reverse that motor's leads or the pot's outer wires, then recheck.
-4. Save verified settings in SMC3Utils. Switch to SimSync and use small manual target changes before trying game motion. SimSync's Send Live applies the displayed PID gains to all three motors.
+4. Save verified settings in SMC3Utils. Switch to SimSync and use small manual target changes before trying game motion. SimSync's Apply Gains updates only the selected motor.
 
-**The sketch enables all motors at startup and targets start at 512.** Applying 24V can cause movement even while SimSync says PAUSED. Opening USB serial can reset the Uno. SimSync PAUSE/LATCH PAUSE stops new host targets; it does not turn off the driver enables or motor power.
+**The sketch starts with all motors disabled.** Opening USB serial can reset the Uno. Resume enables included motors at their current feedback positions. Pause/Latch Pause sends the stop command; a hardware power stop is still required.
 
 ## Firmware housekeeping done
 
@@ -100,4 +100,4 @@ Uploading does **not normally erase EEPROM**. Existing SMC3 PID, PWM and travel 
 - Corrected Motor 3's lower feedback cutoff to use CutoffLimitMin3.
 - Added the Mode 2 pin map beside the mode selection and corrected the documented target range to 0-1023.
 
-PID behavior, default gains, PWM settings, EEPROM format, serial protocol and startup motor enabling are preserved. The wiring and code were checked from source; actual Arduino compilation and powered hardware testing still need the IDE and your Uno.
+EEPROM format and existing SMC3 commands are preserved. The firmware adds bounded timed jogging, starts disabled, and defaults integral gain to zero. The Uno build and software regression tests pass; physical wiring and travel must still be verified on the rig.

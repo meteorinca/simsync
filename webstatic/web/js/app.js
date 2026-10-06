@@ -5,6 +5,10 @@
 (function () {
   'use strict';
 
+  function request(url, options) {
+    return fetch(url, Object.assign({}, options, {signal: AbortSignal.timeout(4000)}));
+  }
+
   /* ---- element refs ---- */
   var $ = function (id) { return document.getElementById(id); };
   var els = {
@@ -35,9 +39,6 @@
 
     // Step test
     stepJoint: $('stepJoint'), stepSize: $('stepSize'), stepTestBtn: $('stepTestBtn'),
-    sweepBtn: $('sweepBtn'),
-    kpMin: $('kpMin'), kpMax: $('kpMax'), kdMin: $('kdMin'), kdMax: $('kdMax'),
-    sweepKi: $('sweepKi'), sweepSteps: $('sweepSteps'),
     resultsBody: $('resultsBody'), testRunning: $('testRunning'),
 
     // Status bar
@@ -55,13 +56,13 @@
     motionSendBtn: $('motionSendBtn'),
 
     // Direct position
-    manJoint: $('manJoint'), manAngle: $('manAngle'), manGoBtn: $('manGoBtn'),
+    manJoint: $('manJoint'), manAngle: $('manPosition'), manGoBtn: $('manGoBtn'),
     stepPlus5: $('stepPlus5'), stepMinus5: $('stepMinus5'),
     stepPlus10: $('stepPlus10'), stepMinus10: $('stepMinus10'),
     centerBtn: $('centerBtn'),
 
     // Scope
-    twBtns: document.querySelectorAll('.tw-btn'),
+    twBtns: document.querySelectorAll('.tw-btn[data-s]'),
     jointTabs: document.querySelectorAll('.joint-tab'),
     traceBtns: document.querySelectorAll('[data-trace]'),
   };
@@ -72,6 +73,11 @@
   var currentJoint = 1;
   var sampleCount = 0;
   var estopActive = false;
+  var motors = [];
+  var loadedJoint = 0;
+  var lastFrameAt = 0;
+  var testBusy = false;
+  var jogPending = false;
 
   /* ---- WebSocket ---- */
   function connect() {
@@ -81,12 +87,14 @@
       try { onFrame(JSON.parse(e.data)); } catch (_) {}
     };
     ws.onclose = function () {
+      loadedJoint = 0;
       setTimeout(connect, 1500);
     };
   }
 
   function onFrame(f) {
     latestFrame = f;
+    lastFrameAt = Date.now();
     sampleCount++;
 
     updatePills(f);
@@ -94,6 +102,9 @@
     updateJoints(f);
     updateStatusBar(f);
     updateEStop(f);
+    updateControls();
+    var feedback = f.joints && f.joints[currentJoint-1];
+    if (feedback) $('jogFeedback').textContent = 'M' + currentJoint + ' | PWM ' + feedback.duty + '/255 | Actual ' + Angles.format(currentJoint, feedback.actual);
 
     // Push to oscilloscope
     if (f.joints && window.Scope) {
@@ -164,9 +175,9 @@
       if (!j) return;
       var e = jEls[i];
       if (!e) return;
-      setText(e.actual, j.actual !== undefined ? j.actual.toFixed(1) + ' counts' : '--');
-      setText(e.target, 'TGT ' + (j.target !== undefined ? j.target.toFixed(1) : '--') + ' counts');
-      setText(e.err,    'ERR ' + (j.error !== undefined ? j.error.toFixed(2) : '--') + ' counts');
+      setText(e.actual, Angles.format(i+1, j.actual));
+      setText(e.target, 'TGT ' + Angles.format(i+1, j.target));
+      setText(e.err,    'ERR ' + Angles.format(i+1, j.error, true));
       setDutyBar(e.fwd, e.rev, j.duty || 0);
     });
   }
@@ -218,6 +229,8 @@
   }
 
   function setSliderAndNum(slider, num, val) {
+    if (slider) { slider.min = 0; slider.max = Math.max(30, val); }
+    if (num) { num.min = 0; num.max = 327.67; num.step = 0.01; }
     if (slider) slider.value = val;
     if (num)    num.value = parseFloat(val).toFixed(2);
   }
@@ -235,7 +248,7 @@
   setupPIDSync(els.kdSlider, els.kdNum);
 
   if (els.pidSendBtn) els.pidSendBtn.addEventListener('click', function () {
-    apiPost('/api/pid', null, {
+    apiPost('/api/pid', 'joint=' + currentJoint, {
       kp: parseFloat(els.kpNum.value),
       ki: parseFloat(els.kiNum.value),
       kd: parseFloat(els.kdNum.value),
@@ -268,14 +281,14 @@
   /* ---- Direct position commands ---- */
   if (els.manGoBtn) els.manGoBtn.addEventListener('click', function () {
     var j = parseInt(els.manJoint.value, 10) || 1;
-    var a = parseFloat(els.manAngle.value);
+    var a = Angles.count(j, parseFloat(els.manAngle.value));
     apiGet('/api/target?joint=' + j + '&angle=' + a.toFixed(1));
   });
 
   function jogJoint(delta) {
     var j = latestFrame && latestFrame.joints ? latestFrame.joints[currentJoint - 1] : null;
     var base = j && Number.isFinite(j.target) ? j.target : 512;
-    apiGet('/api/target?joint=' + currentJoint + '&angle=' + (base + delta).toFixed(1));
+    apiGet('/api/target?joint=' + currentJoint + '&angle=' + (base + Angles.count(currentJoint, delta, true)).toFixed(1));
   }
 
   if (els.stepPlus5)  els.stepPlus5.addEventListener('click',  function () { jogJoint(+5); });
@@ -283,13 +296,14 @@
   if (els.stepPlus10) els.stepPlus10.addEventListener('click', function () { jogJoint(+10); });
   if (els.stepMinus10) els.stepMinus10.addEventListener('click', function () { jogJoint(-10); });
   if (els.centerBtn)  els.centerBtn.addEventListener('click', function () {
-    [1, 2, 3].forEach(function (j) { apiGet('/api/target?joint=' + j + '&angle=512'); });
+    var m = motors[currentJoint - 1];
+    if (m) apiGet('/api/target?joint=' + currentJoint + '&angle=' + m.center);
   });
 
   /* ---- Step Test ---- */
   if (els.stepTestBtn) els.stepTestBtn.addEventListener('click', function () {
     var j    = parseInt(els.stepJoint.value, 10) || 1;
-    var step = parseFloat(els.stepSize.value) || 15;
+    var step = Angles.count(j, parseFloat(els.stepSize.value), true);
     var kp   = parseFloat(els.kpNum.value);
     var ki   = parseFloat(els.kiNum.value);
     var kd   = parseFloat(els.kdNum.value);
@@ -297,39 +311,24 @@
     if (els.testRunning) els.testRunning.style.display = 'inline-block';
   });
 
-  if (els.sweepBtn) els.sweepBtn.addEventListener('click', function () {
-    var j = parseInt(els.stepJoint.value, 10) || 1;
-    var params = [
-      'joint=' + j,
-      'kp_min=' + (els.kpMin.value || 4),
-      'kp_max=' + (els.kpMax.value || 14),
-      'kd_min=' + (els.kdMin.value || 0.5),
-      'kd_max=' + (els.kdMax.value || 3.0),
-      'ki=' + (els.sweepKi.value || 0.2),
-      'steps=' + (els.sweepSteps.value || 4),
-      'step=' + (els.stepSize.value || 15),
-    ].join('&');
-    apiGet('/api/sweep?' + params);
-    if (els.testRunning) els.testRunning.style.display = 'inline-block';
-  });
-
   /* Poll step results every 2s during tests */
+  var resultsPending = false;
   setInterval(function () {
-    fetch('/api/steptest/results')
+    if (resultsPending || document.hidden) return;
+    resultsPending = true;
+    request('/api/steptest/results')
       .then(function (r) { return r.json(); })
       .then(renderResults)
-      .catch(function () {});
+      .catch(function () {}).finally(function () { resultsPending=false; });
   }, 2000);
 
   function renderResults(results) {
     if (!els.resultsBody || !results || !results.length) return;
-    if (els.testRunning) {
-      els.testRunning.style.display = results.some(function (r) { return !r.Success; }) ? 'inline-block' : 'none';
-    }
 
-    var bestIdx = 0;
+    var bestIdx = -1;
     var bestScore = Infinity;
     results.forEach(function (r, i) {
+      if (!r.Success) return;
       var score = r.OvershootPct * 2 + r.SettleTimeMs / 100 + r.SteadyStateErr * 10;
       if (score < bestScore) { bestScore = score; bestIdx = i; }
     });
@@ -337,12 +336,12 @@
     var rows = results.slice(0, 20).map(function (r, i) {
       var cls = i === bestIdx ? 'best' : '';
       return '<tr class="' + cls + '">' +
-        '<td>' + r.Kp.toFixed(2) + '</td>' +
-        '<td>' + r.Kd.toFixed(2) + '</td>' +
-        '<td>' + (r.RiseTimeMs || 0).toFixed(0) + 'ms</td>' +
+        '<td>M' + r.Joint + '</td>' +
+        '<td>' + r.Kp.toFixed(2) + ' / ' + r.Kd.toFixed(2) + '</td>' +
+        '<td>' + (r.RiseTimeMs < 0 ? '--' : r.RiseTimeMs.toFixed(0) + 'ms') + '</td>' +
         '<td>' + (r.OvershootPct || 0).toFixed(1) + '%</td>' +
-        '<td>' + (r.SettleTimeMs || 0).toFixed(0) + 'ms</td>' +
-        '<td>' + (r.SteadyStateErr || 0).toFixed(2) + ' counts</td>' +
+        '<td>' + (r.SettleTimeMs < 0 ? 'Unsettled' : r.SettleTimeMs.toFixed(0) + 'ms') + '</td>' +
+        '<td>' + Angles.format(r.Joint, r.SteadyStateErr || 0, true) + '</td>' +
         '</tr>';
     });
     els.resultsBody.innerHTML = rows.join('');
@@ -383,6 +382,7 @@
   els.jointTabs.forEach(function (tab) {
     tab.addEventListener('click', function () {
       currentJoint = parseInt(tab.dataset.joint, 10);
+      selectMotor(currentJoint);
       if (window.Scope) Scope.setJoint(currentJoint);
       els.jointTabs.forEach(function (t) { t.classList.toggle('active', t === tab); });
     });
@@ -415,7 +415,6 @@
     origOnFrame(f);
     if (!synced && f.serial_ok) {
       synced = true;
-      syncPIDFromFrame(f);
       syncMotionFromFrame(f);
     }
   };
@@ -432,21 +431,144 @@
     });
   }
   function showError(error) {
-    if (els.sbEStop) { els.sbEStop.textContent = error.message; els.sbEStop.style.color = 'var(--red)'; }
-    window.alert(error.message);
+    $('commandStatus').textContent = error.message;
+    $('commandStatus').style.color = 'var(--red)';
   }
   function apiGet(path) {
-    fetch(path).then(checkResponse).catch(showError);
+    return request(path, { method: 'POST', headers: { 'X-SimSync': '1' } }).then(checkResponse).then(function (body) {
+      $('commandStatus').textContent = 'Applied'; $('commandStatus').style.color = 'var(--cyan)'; return body;
+    }).catch(showError);
   }
 
   function apiPost(path, query, body) {
     var url = path + (query ? '?' + query : '');
-    fetch(url, {
+    return request(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-SimSync': '1' },
       body: JSON.stringify(body),
-    }).then(checkResponse).catch(showError);
+    }).then(checkResponse).then(function (body) {
+      $('commandStatus').textContent = 'Applied'; $('commandStatus').style.color = 'var(--cyan)'; return body;
+    }).catch(showError);
   }
 
+  var fields = { min: 'motorMin', max: 'motorMax', center: 'motorCenter', pwm_min: 'pwmMin', pwm_max: 'pwmMax', pwm_rev: 'pwmRev', cutoff: 'motorCutoff', clip: 'motorClip', deadzone: 'motorDeadzone' };
+  function loadMotor() {
+    var m = motors[currentJoint - 1];
+    if (!m || !m.ready) return;
+    var values = m.configured ? m : {kp: 1, ki: 0, kd: 0.4, min: 50, max: 650, center: 512, pwm_min: 0, pwm_max: 100, pwm_rev: 50, cutoff: 23, clip: 40, deadzone: 0, active: true};
+    syncPIDFromFrame({pid: values});
+    Object.keys(fields).forEach(function (k) { $(fields[k]).value = values[k]; });
+    $('motorActive').checked = values.active;
+    loadedJoint = currentJoint;
+  }
+  function selectMotor(j) {
+    currentJoint = j; loadedJoint = 0;
+    els.manJoint.value = j; els.stepJoint.value = j;
+    els.jointTabs.forEach(function (t) { t.classList.toggle('active', Number(t.dataset.joint) === j); });
+    if (window.Scope) Scope.setJoint(j);
+    loadMotor();
+    refreshAngles();
+  }
+  els.manJoint.addEventListener('change', function () { selectMotor(Number(this.value)); });
+  els.stepJoint.addEventListener('change', function () { selectMotor(Number(this.value)); });
+  $('pidReadBtn').addEventListener('click', loadMotor);
+  $('pdBtn').addEventListener('click', function () { setSliderAndNum(els.kiSlider, els.kiNum, 0); });
+  $('captureCenter').addEventListener('click', function () {
+    if (latestFrame && Date.now()-lastFrameAt < 1000) $('motorCenter').value=latestFrame.joints[currentJoint-1].actual;
+  });
+  ['min', 'max'].forEach(function (bound) {
+    $('capture' + (bound === 'min' ? 'Min' : 'Max')).addEventListener('click', function () {
+      if (!latestFrame || Date.now() - lastFrameAt > 1000) return;
+      $(fields[bound]).value = latestFrame.joints[currentJoint - 1].actual;
+    });
+  });
+  $('limitsApply').addEventListener('click', function () {
+    var s = { kp: Number(els.kpNum.value), ki: Number(els.kiNum.value), kd: Number(els.kdNum.value), active: $('motorActive').checked };
+    for (var k of Object.keys(fields)) {
+      if ($(fields[k]).value === '') { showError(new Error('Fill all limits first')); return; }
+      s[k] = Number($(fields[k]).value);
+    }
+    apiPost('/api/motors', null, { joint: currentJoint, settings: s });
+  });
+  $('motorEnable').addEventListener('click', function () { apiGet('/api/motor/enable?joint=' + currentJoint); });
+  $('diagnosticsToggle').addEventListener('change', function () {
+    apiPost('/api/diagnostics', null, {enabled: this.checked});
+  });
+  function openLoopJog(direction) {
+    if (jogPending) return;
+    jogPending = true; updateControls();
+    apiPost('/api/jog', null, {joint: currentJoint, pwm: direction*Number($('jogPWM').value), duration_ms: Number($('jogDuration').value)})
+      .finally(function () { jogPending = false; updateControls(); });
+  }
+  $('jogMinus').addEventListener('click', function () { openLoopJog(-1); });
+  $('jogPlus').addEventListener('click', function () { openLoopJog(1); });
+  $('jogStop').addEventListener('click', function () { apiGet('/api/jog/stop'); });
+  $('testCancel').addEventListener('click', function () { apiGet('/api/steptest/cancel'); });
+  function updateControls() {
+    var live = latestFrame && latestFrame.serial_ok && Date.now() - lastFrameAt < 1000;
+    var m = motors[currentJoint - 1];
+    var jogging = motors.some(function (s) { return s.jogging; });
+    var canJog = live && m && m.ready && m.diagnostics && m.jog_supported && m.configured && m.active && !testBusy && !jogging && !jogPending && !latestFrame.estop;
+    $('diagnosticsToggle').checked = !!(m && m.diagnostics);
+    $('diagnosticsToggle').disabled = !live || !m || !m.jog_supported;
+    $('jogMinus').disabled = !canJog; $('jogPlus').disabled = !canJog;
+    $('jogStop').disabled = !live || !m || !m.jog_supported;
+    $('jogStatus').textContent = !m || !m.ready ? 'Waiting for controller' : !m.jog_supported ? 'Firmware update required' : jogging ? 'Pulse running' : 'Ready | PWM cap ' + m.pwm_max + '/255';
+    var move = live && m && m.ready && m.configured && m.active && !m.disabled && latestFrame.armed && !testBusy;
+    [els.manGoBtn, els.centerBtn, els.stepMinus5, els.stepPlus5, els.stepMinus10, els.stepPlus10, els.stepTestBtn].forEach(function (b) { b.disabled = !move; });
+    $('limitsApply').disabled = !live || !m || !m.ready || latestFrame.armed || testBusy || jogging;
+    $('motorEnable').disabled = !live || !m || m.diagnostics || !m.configured || !m.active || !m.disabled || latestFrame.armed || latestFrame.estop || testBusy || jogging;
+    els.pidSendBtn.disabled = !live || !m || !m.ready || testBusy || jogging;
+    els.pidSaveBtn.disabled = !live || latestFrame.armed || testBusy || jogging;
+    if (!live) { setPill(els.pillSerial, false, 'SERIAL', 'DISC'); loadedJoint = 0; }
+  }
+  var pollBusy = false;
+  setInterval(function () {
+    updateControls();
+    if (pollBusy) return;
+    pollBusy = true;
+    Promise.all([request('/api/motors').then(checkResponse), request('/api/steptest/status').then(checkResponse)]).then(function (data) {
+      var previousMotor = motors[currentJoint - 1];
+      motors = data[0]; testBusy = data[1].running;
+      if (previousMotor && !previousMotor.configured && motors[currentJoint - 1].configured) loadedJoint = 0;
+      els.testRunning.style.display = testBusy ? 'inline-block' : 'none';
+      var m = motors[currentJoint - 1];
+      if (m && m.ready) {
+        $('liveGains').textContent = 'Readback ' + m.kp.toFixed(2) + ' / ' + m.ki.toFixed(2) + ' / ' + m.kd.toFixed(2);
+        $('motorState').textContent = 'M' + currentJoint + ' ' + (m.disabled ? 'Disabled' : 'Enabled') + ' | ' + (m.configured ? m.min + '-' + m.max + ' counts' : 'Set host bounds');
+        $('firmwareRange').textContent = 'Firmware cutoff ' + m.cutoff + '-' + (1023-m.cutoff) + ' | Clip ' + m.clip + '-' + (1023-m.clip);
+        if (loadedJoint !== currentJoint) loadMotor();
+      } else { $('motorState').textContent = 'Waiting for controller'; }
+      updateControls();
+    }).catch(function () {}).finally(function () { pollBusy = false; });
+  }, 500);
+
+  function refreshAngles() {
+    var c=Angles.get(currentJoint), unit=Angles.unit(currentJoint);
+    $('angleZero').value=c ? c.zero : 512;
+    $('angleSpan').value=c ? c.span : '';
+    $('angleStatus').textContent=c ? 'M'+currentJoint+' · calibrated · saved in this browser' : 'M'+currentJoint+' · uncalibrated · ADC counts';
+    $('positionUnit').textContent=unit;
+    $('stepUnit').textContent=unit;
+    [-10,-5,5,10].forEach(function (n) { $('step'+(n<0?'Minus':'Plus')+Math.abs(n)).textContent=(n>0?'+':'')+n+unit; });
+    els.manAngle.min=Angles.value(currentJoint,0);
+    els.manAngle.max=Angles.value(currentJoint,1023);
+    els.manAngle.step=c ? '0.1' : '1';
+    var j=latestFrame && latestFrame.joints[currentJoint-1];
+    els.manAngle.value=Angles.value(currentJoint,j ? j.target : 512).toFixed(1);
+    els.stepSize.min=-Angles.value(currentJoint,40,true);
+    els.stepSize.max=Angles.value(currentJoint,40,true);
+    els.stepSize.step='any';
+    els.stepSize.value=Angles.value(currentJoint,8,true).toFixed(2);
+    if(latestFrame) updateJoints(latestFrame);
+  }
+  $('angleApply').addEventListener('click',function () {
+    try {
+      if ($('angleZero').value==='' || $('angleSpan').value==='') throw new Error('Enter both angle calibration values.');
+      Angles.set(currentJoint,Number($('angleZero').value),Number($('angleSpan').value));
+      refreshAngles();
+    } catch(e) { showError(e); }
+  });
+  refreshAngles();
   connect();
 })();

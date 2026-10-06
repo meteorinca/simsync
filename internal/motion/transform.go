@@ -2,7 +2,28 @@
 // into 3-DOF actuator position targets with configurable gains and limits.
 package motion
 
-import "sync"
+import (
+	"fmt"
+	"math"
+	"sync"
+)
+
+func (c Config) Validate() error {
+	for _, v := range []float32{c.PitchGain, c.RollGain, c.HeaveGain, c.PitchLimit, c.RollLimit, c.HeaveLimit, c.FilterHz} {
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) || v < 0 || v > 1023 {
+			return fmt.Errorf("invalid motion gain, limit or filter")
+		}
+	}
+	for _, v := range []float32{c.PitchNeutral, c.RollNeutral, c.HeaveNeutral} {
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) || v < 0 || v > 1023 {
+			return fmt.Errorf("invalid motor center")
+		}
+	}
+	if c.FilterHz > 50 {
+		return fmt.Errorf("filter must be 0-50 Hz")
+	}
+	return nil
+}
 
 // Config holds all gain and limit parameters, adjustable at runtime.
 type Config struct {

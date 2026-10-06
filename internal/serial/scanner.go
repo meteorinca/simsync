@@ -35,13 +35,13 @@ func selectArduinoPort(ports []*enumerator.PortDetails) (string, error) {
 		return unos[0], nil
 	}
 	if len(unos) > 1 {
-		return "", fmt.Errorf("multiple Arduino Uno ports (%s); select one with --serial COMx", strings.Join(unos, ", "))
+		return "", fmt.Errorf("multiple Arduino Uno ports (%s); select one with --serial <port>", strings.Join(unos, ", "))
 	}
 	if len(usb) == 1 {
 		return usb[0], nil
 	}
 	if len(usb) > 1 {
-		return "", fmt.Errorf("multiple USB serial candidates (%s); select the Arduino with --serial COMx", strings.Join(usb, ", "))
+		return "", fmt.Errorf("multiple USB serial candidates (%s); select the Arduino with --serial <port>", strings.Join(usb, ", "))
 	}
-	return "", fmt.Errorf("no Arduino USB serial candidate found; connect the Uno or specify --serial COMx")
+	return "", fmt.Errorf("no Arduino USB serial candidate found; connect the Uno or specify --serial <port> (Linux: /dev/ttyACM0 or /dev/ttyUSB0; Windows: COM9)")
 }

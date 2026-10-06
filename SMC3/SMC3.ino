@@ -14,10 +14,10 @@
 #endif
 
 // MODE2 wiring (see pinguide.md):
-// Motor 1: D2 -> RPWM, D9 -> LPWM, D3 -> both R_EN and L_EN, pot -> A0.
-// Motor 2: D4 -> RPWM, D10 -> LPWM, D5 -> both R_EN and L_EN, pot -> A1.
+// Motor 1: D5 -> RPWM, D9 -> LPWM, D3 -> both R_EN and L_EN, pot -> A0.
+// Motor 2: D4 -> RPWM, D10 -> LPWM, D8 -> both R_EN and L_EN, pot -> A1.
 // Motor 3: D6 -> RPWM, D11 -> LPWM, D7 -> both R_EN and L_EN, pot -> A2.
-// USB hardware serial: 500000 baud. Motors are enabled at firmware startup.
+// USB hardware serial: 500000 baud. Motors remain disabled at firmware startup.
 
 
 // Uncomment the following line to reverse the direction of Motor 1.
@@ -56,10 +56,10 @@
 //    9 - Motor 1 PWM       
 //    10 - Motor 2 PWM   
 //    11 - Motor 3 PWM
-//    2 - Motor 1 H-Bridge ENA 
+//    5 - Motor 1 H-Bridge ENA
 //    3 - Motor 1 H-Bridge ENB
 //    4 - Motor 2 H-Bridge ENA
-//    5 - Motor 2 H-Bridge ENB
+//    8 - Motor 2 H-Bridge ENB
 //    6 - Motor 3 H-Bridge ENA
 //    7 - Motor 3 H-Bridge ENB
 //    A0 - Motor 1 Feedback
@@ -76,6 +76,19 @@ __asm volatile ("nop");
 
 #include <EEPROM.h>
 #include <SoftwareSerial.h>
+#include "JogPulse.h"
+#include "MotorDrive.h"
+
+// SimSync extension. Existing SMC3 commands and EEPROM layout are unchanged.
+// [cap] -> [q,0,flags]: bit 0 timed jog.
+// [stp] disables every motor.
+// [j/k/l, signed PWM byte, duration/10] starts M1/M2/M3; PWM=0 stops.
+// [4/5/6, minimum high, minimum low], [7/8/9, maximum high, maximum low].
+// [stp] cancels all jogs. Bounds are RAM-only. A finished jog disables its motor.
+JogPulse Jog[3];
+void EndJog(byte motor);
+bool ServiceJog(byte motor, int feedback);
+void StartJog(byte motor, int drive, unsigned int duration);
 
 // defines for setting and clearing register bits
 #ifndef cbi
@@ -143,10 +156,10 @@ byte PowerScale = 7;                // used to divide(shift) PID result changes 
 // 
 
 int OutputPort =PORTD;         // read the current port D bit mask
-const int ENApin1 =2;          // ENA output pin for Motor H-Bridge 1 (ie PortD bit position) 
+const int ENApin1 =5;          // ENA output pin for Motor H-Bridge 1 (ie PortD bit position)
 const int ENBpin1 =3;          // ENB output pin for Motor H-Bridge 1 (ie PortD bit position)
 const int ENApin2 =4;          // ENA output pin for Motor H-Bridge 2 (ie PortD bit position)
-const int ENBpin2 =5;          // ENB output pin for Motor H-Bridge 2 (ie PortD bit position)
+const int ENBpin2 =8;          // ENB output pin for Motor H-Bridge 2
 const int ENApin3 =6;          // ENA output pin for Motor H-Bridge 3 (ie PortD bit position)
 const int ENBpin3 =7;          // ENB output pin for Motor H-Bridge 3 (ie PortD bit position)
 const int PWMpin1 =9;          // PWM output pin for Motor 1   
@@ -156,6 +169,14 @@ const int FeedbackPin1 = A0;   // Motor 1 feedback pin
 const int FeedbackPin2 = A1;   // Motor 2 feedback pin
 const int FeedbackPin3 = A2;   // Motor 3 feedback pin
 const int PotInputPin = A5;  // User adjustable POT used to scale the motion (if enabled)
+
+// OutputPort holds the direction/enable state for PORTD pins. Motor 2's
+// reassigned enable line is on D8 (PORTB), so mirror that bit separately.
+void WriteOutputPort()
+{
+    PORTD = OutputPort & 0xFF;
+    digitalWrite(ENBpin2, (OutputPort >> ENBpin2) & 0x01);
+}
 
 int DeadZone1 = 0;  // feedback deadzone		
 int DeadZone2 = 0;  // feedback deadzone
@@ -191,15 +212,15 @@ int SerialFeedbackPort = 0;
 
 int Ks1 = 1;
 long Kp1_x100 = 100;		//initial value
-long Ki1_x100 = 40;
+long Ki1_x100 = 0;
 long Kd1_x100 = 40;
 int Ks2 = 1;
 long Kp2_x100 = 420;
-long Ki2_x100 = 40;
+long Ki2_x100 = 0;
 long Kd2_x100 = 40;
 int Ks3 = 1;
 int Kp3_x100 = 420;
-int Ki3_x100 = 40;
+int Ki3_x100 = 0;
 int Kd3_x100 = 40;
 int PWMout1 = 0;
 int PWMout2 = 0;
@@ -214,9 +235,10 @@ int PWMoffset3 = 50;
 int PWMmax1 = 100;
 int PWMmax2 = 100;
 int PWMmax3 = 100;
-int PWMrev1 = 200;
-int PWMrev2 = 200;
-int PWMrev3 = 200;
+// Reverse PWM must not exceed the corresponding PWM maximum.
+int PWMrev1 = 50;
+int PWMrev2 = 50;
+int PWMrev3 = 50;
 unsigned int Timer1FreqkHz = 25;   // PWM freq used for Motor 1 and 2
 unsigned int Timer2FreqkHz = 31;   // PWM freq used for Motor 3
 
@@ -740,6 +762,22 @@ void ParseCommand(int ComPort)
             if (Target3>InputClipMax3) { Target3=InputClipMax3; }
             else if (Target3<InputClipMin3) { Target3=InputClipMin3; }
             break;
+        case 'c':
+            if (RxBuffer[1][ComPort]=='a' && RxBuffer[2][ComPort]=='p') {
+                SendValue('q',1,ComPort);
+            }
+            break;
+        case '4': case '5': case '6':
+            if (!Jog[RxBuffer[0][ComPort]-'4'].running)
+                Jog[RxBuffer[0][ComPort]-'4'].minimum = (RxBuffer[1][ComPort]*256)+RxBuffer[2][ComPort];
+            break;
+        case '7': case '8': case '9':
+            if (!Jog[RxBuffer[0][ComPort]-'7'].running)
+                Jog[RxBuffer[0][ComPort]-'7'].maximum = (RxBuffer[1][ComPort]*256)+RxBuffer[2][ComPort];
+            break;
+        case 'j': case 'k': case 'l':
+            StartJog(RxBuffer[0][ComPort]-'j', (int8_t)RxBuffer[1][ComPort], (unsigned int)RxBuffer[2][ComPort]*10);
+            break;
         case 'r':
             if (RxBuffer[1][ComPort]=='d')      // rd - Read a value from the ArduinoPID - next byte identifies value to read
             {
@@ -953,6 +991,10 @@ void ParseCommand(int ComPort)
             }
             break;
         case 's':
+            if (RxBuffer[1][ComPort]=='t' && RxBuffer[2][ComPort]=='p') {
+                for (byte i=0; i<3; ++i) if (Jog[i].running) EndJog(i);
+                DisableMotor1(); DisableMotor2(); DisableMotor3();
+            }
             if (RxBuffer[1][ComPort]=='a' && RxBuffer[2][ComPort]=='v')   // Save all settings to EEPROM
             {
                 WriteEEProm();
@@ -975,11 +1017,11 @@ void ParseCommand(int ComPort)
                 OutputPort &= ~(1 << ENBpin1);        // Unset Motor1 In 2
                 OutputPort &= ~(1 << ENBpin2);        // Unset Motor2 In 2
                 OutputPort &= ~(1 << ENBpin3);        // Unset Motor3 In 2
-                PORTD = OutputPort;
+                WriteOutputPort();
                 OutputPort |= 1 << ENBpin1;           // Set Motor1 In 2
                 OutputPort |= 1 << ENBpin2;           // Set Motor2 In 2
                 OutputPort |= 1 << ENBpin3;           // Set Motor3 In 2
-                PORTD = OutputPort;
+                WriteOutputPort();
 #endif
             }
             else if (RxBuffer[1][ComPort]=='n' && RxBuffer[2][ComPort]=='1')   // Enable motor 1
@@ -988,9 +1030,9 @@ void ParseCommand(int ComPort)
 #ifdef MODE2    // 43A "Chinese" H-Bridge
                 // Reset any overtemp shutdowns and enable the H-Bridges  - toggle pins low then leave high
                 OutputPort &= ~(1 << ENBpin1);        // Unset Motor1 In 2
-                PORTD = OutputPort;
+                WriteOutputPort();
                 OutputPort |= 1 << ENBpin1;           // Set Motor1 In 2
-                PORTD = OutputPort;
+                WriteOutputPort();
 #endif
             }
             else if (RxBuffer[1][ComPort]=='n' && RxBuffer[2][ComPort]=='2')   // Enable motor 2
@@ -999,9 +1041,9 @@ void ParseCommand(int ComPort)
 #ifdef MODE2    // 43A "Chinese" H-Bridge
                 // Reset any overtemp shutdowns and enable the H-Bridges  - toggle pins low then leave high
                 OutputPort &= ~(1 << ENBpin2);        // Unset Motor2 In 2
-                PORTD = OutputPort;
+                WriteOutputPort();
                 OutputPort |= 1 << ENBpin2;           // Set Motor2 In 2
-                PORTD = OutputPort;
+                WriteOutputPort();
 #endif
             }
             else if (RxBuffer[1][ComPort]=='n' && RxBuffer[2][ComPort]=='3')   // Enable motor 3
@@ -1010,9 +1052,9 @@ void ParseCommand(int ComPort)
 #ifdef MODE2    // 43A "Chinese" H-Bridge
                 // Reset any overtemp shutdowns and enable the H-Bridges  - toggle pins low then leave high
                 OutputPort &= ~(1 << ENBpin3);        // Unset Motor3 In 2
-                PORTD = OutputPort;
+                WriteOutputPort();
                 OutputPort |= 1 << ENBpin3;           // Set Motor3 In 2
-                PORTD = OutputPort;
+                WriteOutputPort();
 #endif
             }
             break;
@@ -1147,7 +1189,7 @@ void SetOutputsMotor1()
         PWMout1=PWMoffset1;
         MyPWMWrite(PWMpin1, 0);
     }
-    PORTD = OutputPort;
+    WriteOutputPort();
 }
 
 
@@ -1196,7 +1238,7 @@ void SetOutputsMotor2()
         PWMout2=PWMoffset2;
         MyPWMWrite(PWMpin2, 0);
     }
-    PORTD = OutputPort;
+    WriteOutputPort();
 }
 
 
@@ -1245,7 +1287,7 @@ void SetOutputsMotor3()
         PWMout3=PWMoffset3;
         analogWrite(PWMpin3, 0);
     }
-    PORTD = OutputPort;
+    WriteOutputPort();
 }
 
 #endif
@@ -1258,139 +1300,50 @@ void SetOutputsMotor3()
 //          
 //****************************************************************************************************************
 
-
-void SetOutputsMotor1()   // MODE2
+void DriveMode2(byte motor, int drive)
 {
-    if((Feedback1 > InputClipMax1) && (PWMrev1 != 0))
-    {
-       PWMout1 = PWMrev1;
-       OutputPort &= ~(1 << ENApin1);  // Unset Motor1 In 1
-       MyPWMWrite(PWMpin1, PWMrev1);
-    }
-    else if((Feedback1<InputClipMin1) && (PWMrev1 != 0))
-    {
-       PWMout1 = PWMrev1;
-       OutputPort |= 1 << ENApin1;    // Set Motor1 In 1
-       MyPWMWrite(PWMpin1, 255-PWMrev1);
-    }  
-    else if((Target1 > (Feedback1 + DeadZone1)) || (Target1 < (Feedback1 - DeadZone1)))
-    {
-        if (PWMout1 >= 0)  
-        {                                    
-            // Drive Motor Forward 
-            PWMout1+=PWMoffset1;
-            if(PWMout1 > (PWMmax1+LiftFactor1)){PWMout1=PWMmax1+LiftFactor1;}
-            OutputPort |= 1 << ENApin1;           // Set Motor1 In 1
-            MyPWMWrite(PWMpin1, 255-PWMout1);    // Motor driven when PWM=0 (unset)
-        }  
-        else 
-        {                                              
-            // Drive Motor Backwards 
-            PWMout1 = abs(PWMout1);
-            PWMout1+=PWMoffset1;
-            if(PWMout1 > PWMmax1){PWMout1=PWMmax1;}
-            OutputPort &= ~(1 << ENApin1);        // Unset Motor1 In 1
-            MyPWMWrite(PWMpin1, PWMout1);        // Motor driven when PWM=1 (set)
-        }
-    }
-    else
-    {
-        // Brake Motor 
-        OutputPort &= ~(1 << ENApin1);        // Unset Motor1 In 1
-        PWMout1=PWMoffset1;
-        MyPWMWrite(PWMpin1, 0);
-    }
-    PORTD = OutputPort;
+    byte a = motor==0 ? ENApin1 : motor==1 ? ENApin2 : ENApin3;
+    byte b = motor==0 ? ENBpin1 : motor==1 ? ENBpin2 : ENBpin3;
+    byte pin = motor==0 ? PWMpin1 : motor==1 ? PWMpin2 : PWMpin3;
+    MotorDrive out = mode2Drive(constrain(drive,-255,255),false);
+    // Disable the bridge while switching complementary inputs.
+    bool enabled = (OutputPort & (1 << b)) != 0;
+    OutputPort &= ~(1 << b);
+    WriteOutputPort();
+    if (motor==2) analogWrite(pin,0); else MyPWMWrite(pin,0);
+    OutputPort &= ~(1 << a);
+    WriteOutputPort();
+    if (out.high) OutputPort |= 1 << a;
+    WriteOutputPort();
+    if (motor==2) analogWrite(pin,out.duty); else MyPWMWrite(pin,out.duty);
+    if (enabled) OutputPort |= 1 << b;
+    WriteOutputPort();
 }
 
-
-void SetOutputsMotor2()   // MODE2
+int Mode2Output(int target, int feedback, int pid, int low, int high,
+                int reversePWM, int deadzone, int offset, int maximum, int lift)
 {
-    if ((Feedback2>InputClipMax2) && (PWMrev2 != 0))
-    {
-       PWMout2 = PWMrev2;
-       OutputPort &= ~(1 << ENApin2);  // Unset Motor2 In 1
-       MyPWMWrite(PWMpin2, PWMrev2);
-    }
-    else if ((Feedback2<InputClipMin2) && (PWMrev2 != 0))
-    {
-       PWMout2 = PWMrev2;
-       OutputPort |= 1 << ENApin2;    // Set Motor2 In 1
-       MyPWMWrite(PWMpin2, 255-PWMrev2);
-    }  
-    else if((Target2 > (Feedback2 + DeadZone2)) || (Target2 < (Feedback2 - DeadZone2)))
-    {
-        if (PWMout2 >= 0)  
-        {                                    
-            // Drive Motor Forward 
-            PWMout2+=PWMoffset2;
-            if(PWMout2 > PWMmax2+LiftFactor2){PWMout2=PWMmax2+LiftFactor2;}
-            OutputPort |= 1 << ENApin2;           // Set Motor2 In 1
-            MyPWMWrite(PWMpin2, 255-PWMout2);
-        }  
-        else 
-        {                                              
-            // Drive Motor Backwards
-            PWMout2 = abs(PWMout2);
-            PWMout2+=PWMoffset2;
-            if(PWMout2 > PWMmax2){PWMout2=PWMmax2;}
-            OutputPort &= ~(1 << ENApin2);        // Unset Motor2 In 1
-            MyPWMWrite(PWMpin2, PWMout2);
-        }
-    }
-    else
-    {
-        // Brake Motor 
-        OutputPort &= ~(1 << ENApin2);        // Unset Motor2 In 1
-        PWMout2=PWMoffset2;
-        MyPWMWrite(PWMpin2, 0);
-    }
-    PORTD = OutputPort;
+    if (feedback > high && reversePWM) return -reversePWM;
+    if (feedback < low && reversePWM) return reversePWM;
+    if (abs(target-feedback) <= deadzone) return 0;
+    int magnitude = min(abs(pid)+offset, maximum+(pid>=0 ? lift : 0));
+    return pid>=0 ? magnitude : -magnitude;
 }
 
-
-void SetOutputsMotor3()   // MODE2
+void SetOutputsMotor1()
 {
-    if ((Feedback3>InputClipMax3) && (PWMrev3 != 0))
-    {
-       PWMout3 = PWMrev3;
-       OutputPort &= ~(1 << ENApin3);  // Unset Motor3 In 1
-       analogWrite(PWMpin3, PWMrev3);
-    }
-    else if ((Feedback3<InputClipMin3) && (PWMrev3 != 0))
-    {
-       PWMout3 = PWMrev3;
-       OutputPort |= 1 << ENApin3;    // Set Motor3 In 1
-       analogWrite(PWMpin3, 255-PWMrev3);
-    }  
-    else if((Target3 > (Feedback3 + DeadZone3)) || (Target3 < (Feedback3 - DeadZone3)))
-    {
-        if (PWMout3 >= 0)  
-        {                                    
-            // Drive Motor Forward
-            PWMout3+=PWMoffset3;
-            if(PWMout3> PWMmax3){PWMout3=PWMmax3;}
-            OutputPort |= 1 << ENApin3;           // Set Motor3 In 1
-            analogWrite(PWMpin3, 255-PWMout3);
-        }  
-        else 
-        {                                              
-            // Drive Motor Backwards 
-            PWMout3 = abs(PWMout3);
-            PWMout3+=PWMoffset3;
-            if(PWMout3> PWMmax3){PWMout3=PWMmax3;}
-            OutputPort &= ~(1 << ENApin3);        // Unset Motor3 In 1
-            analogWrite(PWMpin3, PWMout3);
-        }
-    }
-    else
-    {
-        // Brake Motor 
-        OutputPort &= ~(1 << ENApin3);        // Unset Motor3 In 1
-        PWMout3=PWMoffset3;
-        analogWrite(PWMpin3, 0);
-    }
-    PORTD = OutputPort;
+    int drive = Mode2Output(Target1,Feedback1,PWMout1,InputClipMin1,InputClipMax1,PWMrev1,DeadZone1,PWMoffset1,PWMmax1,LiftFactor1);
+    DriveMode2(0,drive); PWMout1=abs(drive);
+}
+void SetOutputsMotor2()
+{
+    int drive = Mode2Output(Target2,Feedback2,PWMout2,InputClipMin2,InputClipMax2,PWMrev2,DeadZone2,PWMoffset2,PWMmax2,LiftFactor2);
+    DriveMode2(1,drive); PWMout2=abs(drive);
+}
+void SetOutputsMotor3()
+{
+    int drive = Mode2Output(Target3,Feedback3,PWMout3,InputClipMin3,InputClipMax3,PWMrev3,DeadZone3,PWMoffset3,PWMmax3,0);
+    DriveMode2(2,drive); PWMout3=abs(drive);
 }
 
 #endif
@@ -1419,6 +1372,10 @@ int CalcMotor1PID(int TargetPosition, int CurrentPosition)
     static int KdFilterCount=0;
 
     Error = TargetPosition - CurrentPosition;
+    if (Disable1) {
+        CumError=0; LastPosition=CurrentPosition; dTerm_x100=0; KdFilterCount=0;
+        return 0;
+    }
     if (abs(Error)<=DeadZone1)
     {
         CumError = 0;
@@ -1456,6 +1413,10 @@ int CalcMotor2PID(int TargetPosition, int CurrentPosition)
     static int KdFilterCount=0;
 
     Error = TargetPosition - CurrentPosition;
+    if (Disable2) {
+        CumError=0; LastPosition=CurrentPosition; dTerm_x100=0; KdFilterCount=0;
+        return 0;
+    }
     if (abs(Error)<=DeadZone2)
     {
         CumError = 0;
@@ -1465,10 +1426,6 @@ int CalcMotor2PID(int TargetPosition, int CurrentPosition)
         CumError += Error;
         CumError = constrain(CumError,-1024,1024);            // Maybe Try 512 as the limits??????
     }
-
-    DeltaPosition = (CurrentPosition - LastPosition);
-    LastPosition = CurrentPosition;
-             
 
     pTerm_x100 = Kp2_x100 * (long)Error;                    // Error can only be between +/-1023 and Kp1_100 is constrained to 0-1000 so can work with type long
     iTerm_x100 = (Ki2_x100 * (long)CumError);        
@@ -1497,6 +1454,10 @@ int CalcMotor3PID(int TargetPosition, int CurrentPosition)
     static int KdFilterCount=0;
 
     Error = TargetPosition - CurrentPosition;
+    if (Disable3) {
+        CumError=0; LastPosition=CurrentPosition; dTerm_x100=0; KdFilterCount=0;
+        return 0;
+    }
     if (abs(Error)<=DeadZone3)
     {
         CumError = 0;
@@ -1506,10 +1467,6 @@ int CalcMotor3PID(int TargetPosition, int CurrentPosition)
         CumError += Error;
         CumError = constrain(CumError,-1024,1024);            // Maybe Try 512 as the limits??????
     }
-
-    DeltaPosition = (CurrentPosition - LastPosition);
-    LastPosition = CurrentPosition;
-             
 
     pTerm_x100 = Kp3_x100 * (long)Error;                    // Error can only be between +/-1023 and Kp1_100 is constrained to 0-1000 so can work with type long
     iTerm_x100 = (Ki3_x100 * (long)CumError) >> 6;        
@@ -1541,7 +1498,7 @@ void DisableMotor1()
     OutputPort &= ~(1 << ENApin1);
     OutputPort &= ~(1 << ENBpin1);
 
-    PORTD = OutputPort;
+    WriteOutputPort();
 
     MyPWMWrite(PWMpin1, 0);
 
@@ -1554,7 +1511,7 @@ void DisableMotor2()
     OutputPort &= ~(1 << ENApin2);
     OutputPort &= ~(1 << ENBpin2);
 
-    PORTD = OutputPort;
+    WriteOutputPort();
 
     MyPWMWrite(PWMpin2, 0);
 
@@ -1567,18 +1524,62 @@ void DisableMotor3()
     OutputPort &= ~(1 << ENApin3);
     OutputPort &= ~(1 << ENBpin3);
 
-    PORTD = OutputPort;
+    WriteOutputPort();
 
     analogWrite(PWMpin3, 0);
 
 }
 
 
-void TogglePin()
+void EndJog(byte motor)
 {
-   static int PinOut=0;
-   PinOut=1-PinOut;
-   digitalWrite(8, PinOut); 
+    Jog[motor].running = false;
+    if (motor==0) { Target1=Feedback1; PWMout1=0; DisableMotor1(); }
+    else if (motor==1) { Target2=Feedback2; PWMout2=0; DisableMotor2(); }
+    else { Target3=Feedback3; PWMout3=0; DisableMotor3(); }
+}
+
+void StartJog(byte motor, int drive, unsigned int duration)
+{
+    if (drive==0) { if (Jog[motor].running) EndJog(motor); return; }
+    // Only one open-loop pulse may run, and repeated commands cannot extend it.
+    for (byte i=0; i<3; ++i) if (Jog[i].running) return;
+    if (!Disable1 || !Disable2 || !Disable3) return;
+    int feedback = analogRead(motor==0 ? FeedbackPin1 : motor==1 ? FeedbackPin2 : FeedbackPin3);
+    int cutoff = motor==0 ? CutoffLimitMin1 : motor==1 ? CutoffLimitMin2 : CutoffLimitMin3;
+    int ceiling = motor==0 ? PWMmax1 : motor==1 ? PWMmax2 : PWMmax3;
+    if (Jog[motor].minimum <= cutoff || Jog[motor].maximum >= 1023-cutoff) return;
+    if (!Jog[motor].start(drive,duration,feedback,ceiling,millis())) return;
+    if (motor==0) Disable1=0;
+    else if (motor==1) Disable2=0;
+    else Disable3=0;
+}
+
+bool ServiceJog(byte motor, int feedback)
+{
+    if (!Jog[motor].running) return false;
+    bool enabled = motor==0 ? Disable1==0 : motor==1 ? Disable2==0 : Disable3==0;
+    if (!Jog[motor].update(feedback,enabled,millis())) { EndJog(motor); return true; }
+    int drive = Jog[motor].pwm;
+    int magnitude = abs(drive);
+    byte a = motor==0 ? ENApin1 : motor==1 ? ENApin2 : ENApin3;
+    byte b = motor==0 ? ENBpin1 : motor==1 ? ENBpin2 : ENBpin3;
+    byte pin = motor==0 ? PWMpin1 : motor==1 ? PWMpin2 : PWMpin3;
+#ifdef MODE2
+    OutputPort |= 1 << b;
+    DriveMode2(motor,drive);
+#else
+    if (drive>0) { OutputPort |= 1 << a; OutputPort &= ~(1 << b); }
+    else { OutputPort &= ~(1 << a); OutputPort |= 1 << b; }
+    int duty = magnitude;
+    // Set direction before applying the pulse.
+    WriteOutputPort();
+    if (motor==2) analogWrite(pin,duty); else MyPWMWrite(pin,duty);
+#endif
+    if (motor==0) PWMout1=magnitude;
+    else if (motor==1) PWMout2=magnitude;
+    else PWMout3=magnitude;
+    return true;
 }
 
 
@@ -1594,23 +1595,9 @@ void loop()
 
     ReadEEProm();
 
-    // Enable all motors
-
-    Disable1=0;
-    Disable2=0;
-    Disable3=0;
-
-#ifdef MODE2    // 43A "Chinese" H-Bridge
-    // Reset any overtemp shutdowns and enable the H-Bridges  - toggle pins low then leave high
-    OutputPort &= ~(1 << ENBpin1);        // Unset Motor1 In 2
-    OutputPort &= ~(1 << ENBpin2);        // Unset Motor2 In 2
-    OutputPort &= ~(1 << ENBpin3);        // Unset Motor3 In 2
-    PORTD = OutputPort;
-    OutputPort |= 1 << ENBpin1;           // Set Motor1 In 2
-    OutputPort |= 1 << ENBpin2;           // Set Motor2 In 2
-    OutputPort |= 1 << ENBpin3;           // Set Motor3 In 2
-    PORTD = OutputPort;
-#endif
+    DisableMotor1();
+    DisableMotor2();
+    DisableMotor3();
 
 
    // Some temporary debug stuff
@@ -1639,8 +1626,6 @@ void loop()
 
         while ((micros() - TimesUp) < PROCESS_PERIOD_uS) { ; }
         TimesUp += PROCESS_PERIOD_uS;
-        TogglePin();                      // Used for testing to monitor PID timing on Oscilloscope
-
         PIDProcessCounter++;
 
         if (PIDProcessCounter >= PIDProcessDivider)
@@ -1651,6 +1636,7 @@ void loop()
     
             Feedback1 = analogRead(FeedbackPin1);
             if ((Feedback1 > CutoffLimitMax1) || (Feedback1 < CutoffLimitMin1)) { DisableMotor1(); } 
+            if (!ServiceJog(0,Feedback1)) {
             PWMout1=CalcMotor1PID(Target1,Feedback1);
             if (Disable1==0) 
             { 
@@ -1661,10 +1647,12 @@ void loop()
                 PWMout1=0;
             }
 
+            }
             // Check and Update Motor 2 drive
 
             Feedback2 = analogRead(FeedbackPin2);
             if ((Feedback2 > CutoffLimitMax2) || (Feedback2 < CutoffLimitMin2)) { DisableMotor2(); } 
+            if (!ServiceJog(1,Feedback2)) {
             PWMout2=CalcMotor2PID(Target2,Feedback2);
             if (Disable2==0) 
             { 
@@ -1675,10 +1663,12 @@ void loop()
                 PWMout2=0;
             }
 
+            }
             // Check and Update Motor 3 drive
 
             Feedback3 = analogRead(FeedbackPin3);
             if ((Feedback3 > CutoffLimitMax3) || (Feedback3 < CutoffLimitMin3)) { DisableMotor3(); } 
+            if (!ServiceJog(2,Feedback3)) {
             PWMout3=CalcMotor3PID(Target3,Feedback3);
             if (Disable3==0) 
             { 
@@ -1689,6 +1679,7 @@ void loop()
                 PWMout3=0;
             }
 
+            }
             LoopCount++;
         }
         

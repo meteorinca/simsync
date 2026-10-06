@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -77,10 +78,8 @@ type Hub struct {
 // NewHub creates a Hub.
 func NewHub() *Hub {
 	return &Hub{
-		clients: make(map[*websocket.Conn]struct{}),
-		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool { return true },
-		},
+		clients:  make(map[*websocket.Conn]struct{}),
+		upgrader: websocket.Upgrader{},
 	}
 }
 
@@ -136,12 +135,17 @@ func New(port int, handlers *Handlers, webFS fs.FS) *Server {
 		Hub:        NewHub(),
 		Handlers:   handlers,
 		WebFS:      webFS,
-		listenAddr: fmt.Sprintf(":%d", port),
+		listenAddr: fmt.Sprintf("127.0.0.1:%d", port),
 	}
 }
 
 // Start registers routes and listens. Blocks until the server stops.
 func (s *Server) Start() error {
+	log.Printf("[api] SimSync dashboard at http://%s", s.listenAddr)
+	return http.ListenAndServe(s.listenAddr, s.Handler())
+}
+
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/ws", s.Hub.ServeWS)
@@ -160,11 +164,27 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/sweep", s.Handlers.Sweep)
 	mux.HandleFunc("/api/motion/config", s.Handlers.MotionConfig)
 	mux.HandleFunc("/api/controller/stats", s.Handlers.ControllerStats)
+	mux.HandleFunc("/api/motors", s.Handlers.Motors)
+	mux.HandleFunc("/api/motor/enable", s.Handlers.MotorEnable)
+	mux.HandleFunc("/api/jog", s.Handlers.Jog)
+	mux.HandleFunc("/api/jog/stop", s.Handlers.JogStop)
+	mux.HandleFunc("/api/diagnostics", s.Handlers.Diagnostics)
+	mux.HandleFunc("/api/steptest/status", s.Handlers.TestStatus)
+	mux.HandleFunc("/api/steptest/cancel", s.Handlers.TestCancel)
 	mux.HandleFunc("/api/calibrate", s.Handlers.Calibrate)
 	mux.HandleFunc("/api/autotune", s.Handlers.Autotune)
 
 	mux.Handle("/", http.FileServer(http.FS(s.WebFS)))
 
-	log.Printf("[api] SimSync dashboard at http://localhost%s", s.listenAddr)
-	return http.ListenAndServe(s.listenAddr, mux)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		readOnly := r.URL.Path == "/api/status" || r.URL.Path == "/api/session" || r.URL.Path == "/api/session/export" || r.URL.Path == "/api/controller/stats" || r.URL.Path == "/api/steptest/results" || r.URL.Path == "/api/steptest/status"
+		if strings.HasPrefix(r.URL.Path, "/api/") && !readOnly {
+			readOnly = r.Method == http.MethodGet && (r.URL.Path == "/api/pid" || r.URL.Path == "/api/motors" || r.URL.Path == "/api/motion/config")
+			if !readOnly && (r.Method != http.MethodPost || r.Header.Get("X-SimSync") != "1") {
+				http.Error(w, "POST with X-SimSync required", http.StatusMethodNotAllowed)
+				return
+			}
+		}
+		mux.ServeHTTP(w, r)
+	})
 }

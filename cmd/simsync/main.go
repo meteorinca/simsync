@@ -28,7 +28,7 @@ import (
 
 func main() {
 	// --- CLI flags ---
-	serialPort := flag.String("serial", "", "Serial port (e.g. COM9). Empty = auto-detect.")
+	serialPort := flag.String("serial", "", "Serial port (e.g. /dev/ttyACM0 on Linux or COM9 on Windows). Empty = auto-detect.")
 	baud := flag.Int("baud", 500000, "Serial baud rate")
 	udpPort := flag.Int("udp-port", 20777, "UDP telemetry listen port")
 	httpPort := flag.Int("port", 7070, "SimSync HTTP/WS port")
@@ -153,11 +153,11 @@ func main() {
 	}
 
 	// --- Step test runner ---
-	setPID := func(kp, ki, kd float32) error {
+	setPID := func(joint int, kp, ki, kd float32) error {
 		if serialPort_ == nil {
 			return fmt.Errorf("serial disabled")
 		}
-		return serialPort_.SetPID(kp, ki, kd)
+		return serialPort_.SetMotorPID(joint, kp, ki, kd)
 	}
 	setTarget := func(joint int, value float32) error {
 		mu.Lock()
@@ -178,23 +178,28 @@ func main() {
 			}
 			return serialPort_.Actual(joint)
 		},
-		setPID, setTarget,
+		func(j int, kp, ki, kd float32) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if !armed || estopTripped {
+				return fmt.Errorf("host output paused")
+			}
+			return setPID(j, kp, ki, kd)
+		}, setTarget,
 	)
+	stepRunner.CheckTarget = func(joint int, value float32) error {
+		mu.RLock()
+		defer mu.RUnlock()
+		if !armed || estopTripped || serialPort_ == nil {
+			return fmt.Errorf("resume host output first")
+		}
+		return serialPort_.CheckTarget(joint, value)
+	}
 
 	stepRunner.OnResult(func(m pid.StepMetrics) {
 		log.Printf("[step] kp=%.2f kd=%.2f  rise=%.0fms  overshoot=%.1f%%  settle=%.0fms  sse=%.2f counts",
 			m.Kp, m.Kd, m.RiseTimeMs, m.OvershootPct, m.SettleTimeMs, m.SteadyStateErr)
 	})
-
-	// --- PID Sweep helper ---
-	linspace := func(min, max float32, n int) []float32 {
-		out := make([]float32, n)
-		step := (max - min) / float32(n-1)
-		for i := range out {
-			out[i] = min + float32(i)*step
-		}
-		return out
-	}
 
 	// --- API Deps ---
 	deps := &api.Deps{
@@ -206,8 +211,96 @@ func main() {
 			}
 			return serialPort_.PID()
 		},
-		SetPID: setPID,
+		SetPID: func(j int, kp, ki, kd float32) error {
+			if stepRunner.IsRunning() {
+				return fmt.Errorf("test running")
+			}
+			return setPID(j, kp, ki, kd)
+		},
+		GetMotors: func() interface{} {
+			if serialPort_ == nil {
+				return [3]serial.MotorSettings{}
+			}
+			return serialPort_.Motors()
+		},
+		ConfigureMotor: func(j int, s serial.MotorSettings) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if armed || stepRunner.IsRunning() {
+				return fmt.Errorf("pause before configuring")
+			}
+			if serialPort_ == nil {
+				return fmt.Errorf("serial disabled")
+			}
+			if err := serialPort_.Configure(j, s); err != nil {
+				return err
+			}
+			cfg := engine.GetConfig()
+			switch j {
+			case 1:
+				cfg.PitchNeutral = s.Center
+			case 2:
+				cfg.RollNeutral = s.Center
+			case 3:
+				cfg.HeaveNeutral = s.Center
+			}
+			engine.SetConfig(cfg)
+			return nil
+		},
+		EnableMotor: func(j int) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if armed || estopTripped || stepRunner.IsRunning() {
+				return fmt.Errorf("pause and clear host latch before enabling")
+			}
+			if serialPort_ == nil {
+				return fmt.Errorf("serial disabled")
+			}
+			return serialPort_.Enable(j)
+		},
+		JogMotor: func(j, pwm, ms int) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if estopTripped || stepRunner.IsRunning() {
+				return fmt.Errorf("clear pause latch and finish step test first")
+			}
+			if serialPort_ == nil {
+				return fmt.Errorf("serial disabled")
+			}
+			armed = false
+			manualMode = true
+			return serialPort_.Jog(j, pwm, ms)
+		},
+		Diagnostics: func(enabled bool) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if serialPort_ == nil {
+				return fmt.Errorf("serial disabled")
+			}
+			if enabled && (estopTripped || stepRunner.IsRunning()) {
+				return fmt.Errorf("clear pause latch and finish step test first")
+			}
+			armed = false
+			manualMode = true
+			return serialPort_.SetDiagnostics(enabled)
+		},
+		StopJog: func() error {
+			mu.Lock()
+			defer mu.Unlock()
+			armed = false
+			if serialPort_ == nil {
+				return fmt.Errorf("serial disabled")
+			}
+			return serialPort_.StopJog()
+		},
+		CancelTest:  func() { mu.Lock(); armed = false; mu.Unlock(); stepRunner.Cancel() },
+		TestRunning: stepRunner.IsRunning,
 		SavePID: func() error {
+			mu.Lock()
+			defer mu.Unlock()
+			if armed || stepRunner.IsRunning() {
+				return fmt.Errorf("pause before saving EEPROM")
+			}
 			if serialPort_ == nil {
 				return fmt.Errorf("serial disabled")
 			}
@@ -215,14 +308,46 @@ func main() {
 		},
 		Calibrate: func(joint int) error { return fmt.Errorf("set pot alignment and travel limits in SMC3Utils") },
 		Autotune:  func(joint int) error { return fmt.Errorf("SMC3 has no on-device autotune; use a host step test") },
-		SetTarget: setTarget,
+		SetTarget: func(j int, v float32) error {
+			if stepRunner.IsRunning() {
+				return fmt.Errorf("test running")
+			}
+			return setTarget(j, v)
+		},
 		Arm: func(state bool) error {
 			mu.Lock()
 			defer mu.Unlock()
 			if state && (estopTripped || serialPort_ == nil || !serialPort_.IsConnected()) {
 				return fmt.Errorf("clear the host pause latch and connect SMC3 first")
 			}
+			if state {
+				if stepRunner.IsRunning() {
+					return fmt.Errorf("wait for test to finish")
+				}
+				active := false
+				for _, s := range serialPort_.Motors() {
+					if s.Active {
+						active = true
+					}
+				}
+				if !active {
+					return fmt.Errorf("configure and include at least one motor")
+				}
+				for i, s := range serialPort_.Motors() {
+					if s.Active {
+						if err := serialPort_.Enable(i + 1); err != nil {
+							return err
+						}
+					}
+				}
+			}
 			armed = state
+			if !state {
+				stepRunner.Cancel()
+				if serialPort_ != nil {
+					return serialPort_.StopJog()
+				}
+			}
 			manualMode = false
 			return nil
 		},
@@ -230,30 +355,49 @@ func main() {
 			mu.Lock()
 			defer mu.Unlock()
 			estopTripped = trip
+			stepRunner.Cancel()
 			armed = false
 			estopReason = "Host output paused; SMC3 still holds position"
+			if serialPort_ != nil {
+				return serialPort_.StopJog()
+			}
 			return nil
 		},
 		ClearEStop: func() error {
 			mu.Lock()
 			defer mu.Unlock()
 			estopTripped = false
+			stepRunner.Cancel()
 			armed = false
 			estopCode = 0
 			estopReason = "Host motion paused"
 			return nil
 		},
 		RunStepTest: func(joint int, kp, ki, kd, stepSize float32) error {
+			if !*noUDP {
+				return fmt.Errorf("restart with --no-udp for bench tests")
+			}
+			if serialPort_ == nil {
+				return fmt.Errorf("serial disabled")
+			}
+			if err := serialPort_.StepReady(joint); err != nil {
+				return err
+			}
 			return stepRunner.RunSingle(joint, kp, ki, kd, stepSize)
-		},
-		RunSweep: func(joint int, kpMin, kpMax, kdMin, kdMax float32, steps int, ki, stepSize float32) {
-			stepRunner.RunSweep(joint, linspace(kpMin, kpMax, steps), linspace(kdMin, kdMax, steps), ki, stepSize)
 		},
 		GetStepResults:  func() interface{} { return stepRunner.Results() },
 		GetMotionConfig: func() interface{} { return engine.GetConfig() },
 		SetMotionConfig: func(body []byte) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if armed || stepRunner.IsRunning() {
+				return fmt.Errorf("pause before changing motion mapping")
+			}
 			cfg := engine.GetConfig()
 			if err := json.Unmarshal(body, &cfg); err != nil {
+				return err
+			}
+			if err := cfg.Validate(); err != nil {
 				return err
 			}
 			engine.SetConfig(cfg)

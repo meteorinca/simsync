@@ -5,9 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SimSync - Motion Control</title>
   <meta name="description" content="Real-time 3DOF motion simulator control, PID tuning, and telemetry dashboard.">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="icon" type="image/png" sizes="32x32" href="/img/favicon-32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="/img/favicon-16.png">
   <link rel="icon" type="image/png" href="/img/rallycar-tight.png">
@@ -40,7 +37,7 @@
     <!-- OSCILLOSCOPE -->
     <div id="scopePanel">
       <div id="scopeHeader">
-        <span id="scopeTitle">LIVE SCOPE</span>
+        <span id="scopeTitle">POSITION</span>
 
         <!-- Joint tabs -->
         <div class="joint-tabs">
@@ -61,7 +58,7 @@
         <div class="joint-tabs" style="margin-left:10px">
           <button class="tw-btn active" data-trace="target" title="Target position">TGT</button>
           <button class="tw-btn active" data-trace="actual" title="Actual position">ACT</button>
-          <button class="tw-btn active" data-trace="error"  title="Position error">ERR</button>
+          <button class="tw-btn" data-trace="error"  title="Position error">ERR</button>
           <button class="tw-btn"        data-trace="duty"   title="Motor duty">DUTY</button>
         </div>
       </div>
@@ -80,7 +77,7 @@
     <div id="jointRow">
       <!-- J1 -->
       <div class="joint-card">
-        <div class="jc-header"><span>PITCH - J1</span><span id="j1Duty" class="monoval" style="color:var(--text-dim);font-size:9px"></span></div>
+        <div class="jc-header"><span>M1 · Front L</span><span id="j1Duty" class="monoval" style="color:var(--text-dim);font-size:9px"></span></div>
         <div id="j1Actual" class="jc-actual">--.- counts</div>
         <div id="j1Target" class="jc-target">TGT --.- counts</div>
         <div id="j1Err"    class="jc-err">ERR --.- counts</div>
@@ -91,7 +88,7 @@
       </div>
       <!-- J2 -->
       <div class="joint-card">
-        <div class="jc-header"><span>ROLL - J2</span></div>
+        <div class="jc-header"><span>M2 · Front R</span></div>
         <div id="j2Actual" class="jc-actual">--.- counts</div>
         <div id="j2Target" class="jc-target">TGT --.- counts</div>
         <div id="j2Err"    class="jc-err">ERR --.- counts</div>
@@ -102,7 +99,7 @@
       </div>
       <!-- J3 -->
       <div class="joint-card">
-        <div class="jc-header"><span>HEAVE - J3</span></div>
+        <div class="jc-header"><span>M3 · Rear</span></div>
         <div id="j3Actual" class="jc-actual">--.- counts</div>
         <div id="j3Target" class="jc-target">TGT --.- counts</div>
         <div id="j3Err"    class="jc-err">ERR --.- counts</div>
@@ -114,6 +111,7 @@
     </div>
 
     <!-- TELEMETRY GAUGES -->
+    <details class="panel secondary"><summary>Game telemetry</summary>
     <div id="gaugeRow">
       <div class="gauge-card">
         <div class="gauge-label">Speed</div>
@@ -158,14 +156,15 @@
       </div>
     </div>
 
+    </details>
+
     <!-- STEP TEST RESULTS -->
-    <div class="panel">
-      <div class="panel-title">Step Test Results <span id="testRunning" class="running-indicator" style="display:none"></span></div>
+    <details class="panel secondary"><summary>Test results <span id="testRunning" class="running-indicator" style="display:none"></span></summary>
       <div class="table-scroll">
         <table id="resultsTable">
           <thead>
             <tr>
-              <th>Kp</th><th>Kd</th><th>Rise</th><th>Overshoot</th><th>Settle</th><th>SS Err</th>
+              <th>Motor</th><th>Kp / Kd</th><th>Rise</th><th>Overshoot</th><th>Settle</th><th>Error</th>
             </tr>
           </thead>
           <tbody id="resultsBody">
@@ -176,7 +175,7 @@
       <div class="btn-row">
         <button id="exportBtn" class="btn btn-cyan">Export CSV</button>
       </div>
-    </div>
+    </details>
 
   </div><!-- /mainLeft -->
 
@@ -196,7 +195,8 @@
 
     <!-- SAFETY -->
     <div class="sidebar-section">
-      <div class="panel-title">Host Motion Output</div><p style="font-size:11px;color:var(--text-dim)">Pause stops new targets. SMC3 keeps holding position. Use hardware power isolation to stop motors.</p>
+      <div class="panel-title">Host Output</div>
+      <div id="commandStatus" role="status" class="control-note"></div>
       <div class="btn-row" style="margin-bottom:8px">
         <button id="armBtn" class="btn btn-green">RESUME</button>
         <button id="disarmBtn" class="btn btn-amber">PAUSE</button>
@@ -206,7 +206,7 @@
 
     <!-- DIRECT ANGLE -->
     <div class="sidebar-section">
-      <div class="panel-title">Direct Position</div>
+      <div class="panel-title">Position <span id="positionUnit">counts</span></div>
       <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
         <select id="manJoint" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:4px 6px;font-size:11px">
           <option value="1">M1 Front L</option>
@@ -226,35 +226,81 @@
       </div>
     </div>
 
+    <details class="sidebar-section">
+      <summary>Open-loop Jog</summary>
+      <label class="control-note"><input id="diagnosticsToggle" type="checkbox"> Enable jog · pauses PID & game output</label>
+      <div class="sweep-grid">
+        <div class="sweep-field"><label for="jogPWM">PWM / 255</label><input id="jogPWM" type="number" value="40" min="1" max="100" step="1"></div>
+        <div class="sweep-field"><label for="jogDuration">Pulse ms</label><input id="jogDuration" type="number" value="150" min="50" max="500" step="10"></div>
+      </div>
+      <div class="btn-row">
+        <button id="jogMinus" class="btn btn-purple">Jog -</button>
+        <button id="jogPlus" class="btn btn-cyan">Jog +</button>
+        <button id="jogStop" class="btn btn-red">Stop Jog</button>
+      </div>
+      <div id="jogStatus" class="control-note">Checking firmware</div>
+      <div id="jogFeedback" class="control-note"></div>
+
+    </details>
+
     <!-- PID TUNING -->
     <div class="sidebar-section">
-      <div class="panel-title">PID Gains (all motors)</div><p style="font-size:11px;color:var(--text-dim)">Reads Motor 1 gains; Send Live applies to all three motors. Set travel limits and PWM in SMC3Utils first.</p>
+      <div class="panel-title">PID</div>
+      <div id="liveGains" class="control-note">Waiting for controller</div>
 
       <div class="pid-row">
         <span class="pid-label">Kp</span>
-        <input id="kpSlider" class="pid-slider" type="range" min="0.1" max="30" step="0.1" value="8.5">
-        <input id="kpNum" class="pid-num" type="number" min="0.1" max="30" step="0.1" value="8.50">
+        <input id="kpSlider" class="pid-slider" type="range" min="0.1" max="30" step="0.1" value="1">
+        <input id="kpNum" class="pid-num" type="number" min="0.1" max="30" step="0.1" value="1.00">
       </div>
       <div class="pid-row">
         <span class="pid-label" style="color:var(--amber)">Ki</span>
-        <input id="kiSlider" class="pid-slider ki" type="range" min="0" max="2" step="0.01" value="0.2">
-        <input id="kiNum" class="pid-num" type="number" min="0" max="2" step="0.01" value="0.20">
+        <input id="kiSlider" class="pid-slider ki" type="range" min="0" max="2" step="0.01" value="0">
+        <input id="kiNum" class="pid-num" type="number" min="0" max="2" step="0.01" value="0.00">
       </div>
       <div class="pid-row">
         <span class="pid-label" style="color:var(--purple)">Kd</span>
-        <input id="kdSlider" class="pid-slider kd" type="range" min="0" max="5" step="0.05" value="1.2">
-        <input id="kdNum" class="pid-num" type="number" min="0" max="5" step="0.05" value="1.20">
+        <input id="kdSlider" class="pid-slider kd" type="range" min="0" max="5" step="0.05" value="0.4">
+        <input id="kdNum" class="pid-num" type="number" min="0" max="5" step="0.05" value="0.40">
       </div>
 
       <div class="btn-row" style="margin-top:4px">
-        <button id="pidSendBtn" class="btn btn-cyan">Send Live</button>
-        <button id="pidSaveBtn" class="btn btn-green">Save to EEPROM</button>
+        <button id="pidSendBtn" class="btn btn-cyan">Apply Gains</button>
+        <button id="pidReadBtn" class="btn">Read</button>
+        <button id="pdBtn" class="btn">Ki = 0</button>
+        <button id="pidSaveBtn" class="btn btn-green" title="Saves all controller channels, not host bounds">Save EEPROM</button>
       </div>
     </div>
 
+    <details class="sidebar-section">
+      <summary>Motor limits · ADC / PWM</summary>
+      <div id="motorState" class="control-note">Waiting for controller</div>
+      <label class="control-note"><input id="motorActive" type="checkbox"> Include in output</label>
+      <div class="sweep-grid">
+        <div class="sweep-field"><label for="motorMin">Host min</label><input id="motorMin" value="50" type="number" min="0" max="1023" step="1"></div>
+        <div class="sweep-field"><label for="motorMax">Host max</label><input id="motorMax" value="650" type="number" min="0" max="1023" step="1"></div>
+        <div class="sweep-field"><label for="motorCenter">Center</label><input id="motorCenter" value="512" type="number" min="0" max="1023" step="1"></div>
+        <div class="sweep-field"><label for="pwmMax">PWM max</label><input id="pwmMax" value="100" type="number" min="0" max="255" step="1"></div>
+        <div class="sweep-field"><label for="pwmMin">PWM min</label><input id="pwmMin" value="0" type="number" min="0" max="255" step="1"></div>
+        <div class="sweep-field"><label for="pwmRev">PWM reverse</label><input id="pwmRev" value="50" type="number" min="0" max="255" step="1"></div>
+        <div class="sweep-field"><label for="motorCutoff">Cutoff margin</label><input id="motorCutoff" value="23" type="number" min="1" max="254" step="1"></div>
+        <div class="sweep-field"><label for="motorClip">Clip margin</label><input id="motorClip" value="40" type="number" min="2" max="255" step="1"></div>
+        <div class="sweep-field"><label for="motorDeadzone">Deadzone</label><input id="motorDeadzone" value="0" type="number" min="0" max="255" step="1"></div>
+      </div>
+      <div id="firmwareRange" class="control-note"></div>
+      <div class="btn-row">
+        <button id="captureMin" class="btn">Use actual min</button>
+        <button id="captureMax" class="btn">Use actual max</button>
+        <button id="captureCenter" class="btn">Use actual center</button>
+        <button id="limitsApply" class="btn btn-cyan">Apply Limits</button>
+        <button id="motorEnable" class="btn btn-amber">Enable Motor</button>
+      </div>
+
+    </details>
+
     <!-- STEP TEST LAUNCHER -->
-    <div class="sidebar-section">
-      <div class="panel-title">Step Test</div>
+    <details class="sidebar-section">
+      <summary>Step Test</summary>
 
       <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
         <select id="stepJoint" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:4px 6px;font-size:11px">
@@ -263,30 +309,21 @@
           <option value="3">M3 Rear</option>
         </select>
         <label style="font-size:10px;color:var(--text-dim)">Step</label>
-        <input id="stepSize" type="number" value="15" step="1" min="2" max="40"
+        <input id="stepSize" type="number" value="8" step="4" min="-40" max="40"
           style="background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:4px 8px;font-family:var(--mono);font-size:11px;width:55px">
-        <span style="font-size:9px;color:var(--text-dim)">counts</span>
+        <span style="font-size:9px;color:var(--text-dim)" id="stepUnit">counts</span>
       </div>
 
       <div class="btn-row" style="margin-bottom:10px">
         <button id="stepTestBtn" class="btn btn-cyan">Run Step Test</button>
+        <button id="testCancel" class="btn btn-amber">Cancel / Hold</button>
       </div>
 
-      <div class="panel-title" style="margin-bottom:6px">Kp/Kd Grid Sweep</div>
-      <div class="sweep-grid">
-        <div class="sweep-field"><label>Kp Min</label><input id="kpMin" type="number" value="4"   step="0.5" min="0.1"></div>
-        <div class="sweep-field"><label>Kp Max</label><input id="kpMax" type="number" value="14"  step="0.5"></div>
-        <div class="sweep-field"><label>Kd Min</label><input id="kdMin" type="number" value="0.5" step="0.1" min="0"></div>
-        <div class="sweep-field"><label>Kd Max</label><input id="kdMax" type="number" value="3.0" step="0.1"></div>
-        <div class="sweep-field"><label>Ki</label>     <input id="sweepKi"    type="number" value="0.2" step="0.01"></div>
-        <div class="sweep-field"><label>Grid Steps</label><input id="sweepSteps" type="number" value="4" step="1" min="2" max="8"></div>
-      </div>
-      <button id="sweepBtn" class="btn btn-purple" style="width:100%">Run Sweep</button>
-    </div>
+    </details>
 
     <!-- MOTION MAPPING -->
-    <div class="sidebar-section">
-      <div class="panel-title">Motion Mapping</div>
+    <details class="sidebar-section">
+      <summary>Motion Mapping</summary>
 
       <div class="mcfg-row">
         <span class="mcfg-label">Pitch Gain</span>
@@ -310,12 +347,22 @@
       </div>
 
       <button id="motionSendBtn" class="btn btn-cyan" style="width:100%;margin-top:4px">Apply</button>
-    </div>
+    </details>
 
+    <details class="sidebar-section">
+      <summary>Angle calibration</summary>
+      <div class="sweep-grid">
+        <div class="sweep-field"><label for="angleZero">0° at ADC count</label><input id="angleZero" type="number" min="0" max="1023" value="512"></div>
+        <div class="sweep-field"><label for="angleSpan">0–1023 span (°)</label><input id="angleSpan" type="number" min="0.1" max="3600" step="0.1" placeholder="Pot travel"></div>
+      </div>
+      <button id="angleApply" class="btn btn-cyan">Apply to selected motor</button>
+      <div id="angleStatus" class="control-note">Uncalibrated · ADC counts</div>
+    </details>
   </div><!-- /sidebar -->
 
 </div><!-- /app -->
 
+<script src="/js/angles.js"></script>
 <script src="/js/plots.js"></script>
 <script src="/js/app.js"></script>
 </body>

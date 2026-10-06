@@ -22,7 +22,15 @@ func (p *capturePort) Write(b []byte) (int, error) {
 	p.data = append(p.data, b[:n]...)
 	return n, nil
 }
-func connected(p *Port, c *capturePort) { p.port = c; p.ready = true; p.lastReply = time.Now() }
+func connected(p *Port, c *capturePort) {
+	p.port = c
+	p.ready = true
+	p.lastReply = time.Now()
+	for i := range p.settings {
+		p.settings[i] = MotorSettings{Configured: true, Active: true, Min: 0, Max: 1023, Center: 512}
+		p.seen[i] = time.Now()
+	}
+}
 func TestNativeTargetsAndPartialWrites(t *testing.T) {
 	p := New("COM1", 0, nil)
 	c := &capturePort{chunk: 2}
