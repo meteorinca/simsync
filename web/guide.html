@@ -1,58 +1,8 @@
 <!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="A practical SimSync guide to motor calibration, feedback filters, PID tuning and your first gaming session.">
-  <title>Calibration guide · SimSync</title>
-  <link rel="icon" href="/img/favicon-32.png">
-  <link rel="stylesheet" href="/css/guide.css">
-</head>
-<body>
-  <header class="topbar"><a class="brand" href="/">SIMSYNC <span>/ FIELD GUIDE</span></a><a class="back" href="/">← Back to dashboard</a></header>
-  <main id="main">
-    <section class="hero" aria-labelledby="title">
-      <div class="eyebrow">CALIBRATE → TUNE → DRIVE</div>
-      <h1 id="title">Smooth motion.<br><span>One small change at a time.</span></h1>
-      <p>Start with one motor. Build a quiet, repeatable response. Then bring the whole rig into the game.</p>
-      <nav class="jump-links" aria-label="Guide sections"><a href="#calibration">Follow the steps ↓</a><a href="#filters">Filter reference</a><a href="#pid">PID reference</a><a href="#troubleshooting">Quick fixes</a></nav>
-      <p class="notice">Support the rig before solo tests: the other motors lose drive. Keep a hardware power stop within reach. This guide sends no motor commands.</p>
-    </section>
-
-    <section id="calibration" aria-labelledby="calibration-title">
-      <div class="section-heading"><span class="eyebrow">THE ROUTE TO YOUR FIRST SESSION</span><h2 id="calibration-title">Six checks, in order.</h2></div>
-      <ol class="steps">
-        <li><div class="step-number" aria-hidden="true">01</div><div><h3>Start paused, in bench mode</h3><p>Run <code>./simsync --no-udp</code> and open Motor Tuning. Use the updated SMC3 firmware for LPF/HPF. Keep motor power off during uploads and wiring changes; close other serial apps.</p><span class="pass">Continue when: controller readback is live and output is paused.</span></div></li>
-        <li><div class="step-number" aria-hidden="true">02</div><div><h3>Set each motor’s real travel</h3><p>With motor power off, check that each pot follows its own mechanism smoothly. In Motor limits, set a usable min, max and center clear of physical stops. Keep host bounds at least 4 counts inside input clipping, and clipping inside the cutoff window. Apply Limits while paused.</p><p class="aside">Use actual center at the mechanical neutral. Display range only changes angle labels—it does not limit travel.</p><span class="pass">Continue when: feedback and target are inside the configured host range.</span></div></li>
-        <li><div class="step-number" aria-hidden="true">03</div><div><h3>Check direction before PID</h3><p>Test one unloaded motor with short, low-PWM open-loop jogs. Positive jog must increase that motor’s feedback; negative must decrease it. If reversed, cut power and correct drive/feedback direction. Turn jog mode off before closed-loop tests.</p><span class="pass">Continue when: both directions agree and the correct feedback channel moves.</span></div></li>
-        <li><div class="step-number" aria-hidden="true">04</div><div><h3>Make small steps settle</h3><p>Choose <strong>Run only M1/M2/M3</strong>. Use the last stable PWM cap and gains, with Ki = 0. Test +4–8 counts, then the same negative step. For a fresh motor, start conservatively; another motor’s preset is not a verified tune.</p><p>Increase Kp about 5% at a time. If ringing grows, restore the last stable setting, then try a little more Kd. Only raise PWM max when the response needs more drive: add 5–10 counts and retest before changing gains. Keep filters fixed during comparisons.</p><span class="pass">Continue when: holding is quiet and both steps settle without growing oscillation or a fault.</span></div></li>
-        <li><div class="step-number" aria-hidden="true">05</div><div><h3>Validate beyond the center</h3><p>Repeat for each motor, several positions and your operating load. Try a slow sine signal within the verified range. Watch tracking, current and temperature; check that PWM does not stay at its cap. Pause before changes. Apply saves settings for restart; browser profiles save drafts.</p><span class="pass">Continue when: the rig tracks smoothly through its intended travel under load.</span></div></li>
-        <li><div class="step-number" aria-hidden="true">06</div><div><h3>Bring in the game gently</h3><p>Pause, then restart SimSync without <code>--no-udp</code>. Configure your game’s telemetry for SimSync’s UDP port (default <code>20777</code>). While paused, lower Motion Mapping gains; mapped targets must stay inside each motor’s verified host bounds.</p><p>Confirm live telemetry, then Resume: this enables <strong>all included motors</strong>. Start with a slow test drive. Check braking, turning and bumps produce the expected motion. Increase one game-motion gain at a time; keep the motor PID tune fixed.</p><span class="pass">Ready for gaming when: direction, travel, settling and temperature remain acceptable during representative driving. If not, pause and return to the relevant check.</span></div></li>
-      </ol>
-    </section>
-
-    <div class="references">
-      <article id="filters" class="reference" aria-labelledby="filters-title">
-        <span class="eyebrow">FILTER REFERENCE</span><h2 id="filters-title">Less noise, without too much delay.</h2>
-        <dl><div><dt>Feedback LPF</dt><dd>Smooths the position signal used by PID. Lower Hz means more smoothing <em>and more delay</em>. Too much can worsen overshoot.</dd></div><div><dt>Derivative HPF</dt><dd>Removes slow components from derivative damping only. It never removes position holding. Leave it off initially; raising it can remove useful damping.</dd></div><div><dt>Deadzone</dt><dd>Allows a small position tolerance. Try 1–2 raw ADC counts for tiny holding chatter before heavy filtering.</dd></div></dl>
-        <p class="try">Starting experiment: last stable PWM, HPF off, LPF around 80 Hz. Apply while paused, then repeat the same steps. This is a trial, not a universal tune.</p>
-        <p class="aside">0 Hz bypasses either filter. Cutoffs are per motor; Apply Filters saves them to SimSync, not Arduino EEPROM. Raw feedback still drives safety cutoffs. Plot feedback is quantized in 4-count increments, so tiny jitter may be invisible.</p>
-        <a class="source" href="https://www.mathworks.com/help/simscape/ug/filtering-input-signals-and-providing-time-derivatives.html" target="_blank" rel="noopener noreferrer">More on filtering and delay · MathWorks ↗</a>
-      </article>
-      <article id="pid" class="reference" aria-labelledby="pid-title">
-        <span class="eyebrow">PID REFERENCE</span><h2 id="pid-title">Pull, correct, and damp.</h2>
-        <dl><div><dt>P · Kp</dt><dd>Pushes toward the target. More can make motion quicker, but too much causes overshoot or oscillation.</dd></div><div><dt>I · Ki</dt><dd>Corrects persistent error over time. Start at 0. Add only a little after PD is stable and a meaningful offset remains.</dd></div><div><dt>D · Kd</dt><dd>Adds damping to motion. Small increases can reduce overshoot; too much makes feedback noise more noticeable.</dd></div></dl>
-        <p class="try">PWM max is a drive ceiling, not damping. If the motor never reaches the old cap, raising it will not improve that response. Avoid jumping from 100 to 200.</p>
-        <p class="aside">Keep the same motor, step size, direction, PWM and filters when comparing gains. Aim for consistent settling—not the biggest P number. PWM frequency changes switching timing; it is separate from PWM max. M1/M2 share their frequency timer.</p>
-        <a class="source" href="https://www.ni.com/en/shop/labview/pid-theory-explained.html" target="_blank" rel="noopener noreferrer">More on PID behavior · NI ↗</a>
-      </article>
-    </div>
-
-    <section id="troubleshooting" class="troubleshooting" aria-labelledby="fixes-title">
-      <span class="eyebrow">WHEN SOMETHING FEELS WRONG</span><h2 id="fixes-title">Change the cause, then retest.</h2>
-      <div class="fixes"><p><strong>Buzzing at rest</strong>Check pot wiring and mechanical play. Try a small deadzone or gentle LPF; excessive Kp/Kd can also chatter.</p><p><strong>Overshoot after more PWM</strong>Restore the previous cap. Retune damping at the stable cap, then increase drive gradually.</p><p><strong>Motion runs away / a guard trips</strong>Stop and inspect feedback direction, coupling and gains. Do not repeatedly clear the fault and retry.</p><p><strong>Game motion is harsh, bench tests are good</strong>Reduce game-motion gains and travel limits first. Preserve the verified motor tune.</p></div>
-    </section>
-    <footer><a href="/">← Back to dashboard & Motor Tuning</a><span>Save a known-good tune before the next experiment.</span></footer>
-  </main>
-</body>
-</html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SimSync reference</title><link rel="stylesheet" href="/css/tokens.css"><link rel="stylesheet" href="/css/guide.css"></head><body>
+<header><a href="/">← SimSync</a><h1>Reference</h1><p>Use Setup for calibration and Tune for step tests.</p></header>
+<main><section id="pid"><h2>PID gains</h2><dl><dt>Kp: response</dt><dd>Raises output in proportion to position error. Too much causes overshoot or oscillation.</dd><dt>Ki: remaining error</dt><dd>Corrects persistent error. Start at zero; add only after proportional and derivative control are stable.</dd><dt>Kd: damping</dt><dd>Slows rapid changes. Increase in small increments when steps overshoot.</dd></dl><p>Compare steps with the same size and direction. Check both directions under load.</p></section>
+<section id="filters"><h2>Filters and timing</h2><p>Feedback LPF smooths feedback. A lower cutoff adds delay. Zero disables it.</p><p>Derivative HPF affects damping, not position holding. Start at zero and retest after changes.</p><p>Ks controls derivative sampling. Fpid and PWM timers are shared controller settings. M1 and M2 share a PWM timer.</p><p>Pause motors and disable jog before applying filters or timing.</p></section>
+<section id="travel"><h2>Travel limits</h2><p>Cutoff disables output at the safety edge. Clip constrains commanded targets. Margins apply at both ends of 0 to 1023 counts.</p><p>Host bounds must stay at least four counts inside clipping. Center must be inside host bounds.</p><p>Display degrees are estimates. Commands, travel limits, and CSV use counts.</p></section>
+<section id="troubleshooting"><h2>Troubleshooting</h2><dl><dt>Feedback moves backward</dt><dd>Stop, cut motor power, and correct wiring or feedback direction before enabling PID.</dd><dt>Motor chatters at rest</dt><dd>Check feedback noise and mechanical play. Try a small deadzone before stronger filtering.</dd><dt>PWM reaches its cap</dt><dd>Lower Kp, or raise PWM max in increments of 5 to 10. Check current and temperature.</dd><dt>Step does not settle</dt><dd>Check travel, feedback direction, friction, and the scope before changing gains.</dd><dt>Controller does not connect</dt><dd>Check the port, firmware, and cable. Close other programs using the serial port.</dd></dl></section>
+<section id="saving"><h2>Saving</h2><p>Apply saves settings for restart. Save tune records a successful calibration. EEPROM stores firmware settings; profiles export staged values.</p><p>Import stages values for review. It does not send motor commands.</p></section></main></body></html>

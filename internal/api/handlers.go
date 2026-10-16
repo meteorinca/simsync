@@ -12,6 +12,10 @@ import (
 // Deps are the live service references handlers need.
 type Deps struct {
 	SettingsInfo      func() interface{}
+	GetSetup          func() interface{}
+	SetSetup          func(int, bool, bool) error
+	ConnectionInfo    func() (interface{}, error)
+	SetConnection     func(string, bool) error
 	GetSessionSamples func(n int) interface{}
 	ExportSessionCSV  func(w http.ResponseWriter)
 	GetPID            func() (kp, ki, kd float32)

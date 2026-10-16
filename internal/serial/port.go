@@ -194,7 +194,22 @@ func (p *Port) IsConnected() bool {
 	defer p.mu.Unlock()
 	return p.ready && p.port != nil && time.Since(p.lastReply) < time.Second
 }
-func (p *Port) PortName() string { return p.portName }
+func (p *Port) PortName() string { p.mu.Lock(); defer p.mu.Unlock(); return p.portName }
+
+// SelectPort closes the paused connection; the existing loop reconnects.
+func (p *Port) SelectPort(name string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.ready && (p.disabled != 7 || time.Now().Before(p.jogUntil)) {
+		return fmt.Errorf("pause motors before selecting a port")
+	}
+	p.portName = name
+	p.ready = false
+	if p.port != nil {
+		return p.port.Close()
+	}
+	return nil
+}
 func (p *Port) Stats() (interface{}, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -218,7 +233,7 @@ func (p *Port) loop() {
 			return
 		default:
 		}
-		name := p.portName
+		name := p.PortName()
 		if name == "" {
 			var err error
 			name, err = ScanForController()
@@ -248,6 +263,11 @@ func (p *Port) loop() {
 		case <-time.After(2 * time.Second):
 		}
 		p.mu.Lock()
+		if name != p.portName && p.portName != "" {
+			p.mu.Unlock()
+			sp.Close()
+			continue
+		}
 		p.port = sp
 		p.ready = false
 		p.seen = [3]time.Time{}

@@ -16,12 +16,9 @@
   // Per-joint sample buffers
   var buffers = { 1: [], 2: [], 3: [] };
 
-  var colors = {
-    target: '#00e5ff',
-    actual: '#b57aff',
-    error:  '#ffb830',
-    duty:   '#39ff6b',
-  };
+  var tokens=getComputedStyle(document.documentElement);
+  function token(name){return tokens.getPropertyValue(name).trim();}
+  var colors={target:token('--trace-target'),actual:token('--trace-actual'),error:token('--trace-error'),duty:token('--trace-pwm')};
 
   var showTraces = { target: true, actual: true, error: false, duty: false, limits:false, clip:false, host:false };
 
@@ -73,12 +70,10 @@
 
     ctx.clearRect(0, 0, W, H);
 
-    // Tuning is intentionally light so the boundary geometry and response are easy to inspect.
-    var light = document.body.classList.contains('tuning');
-    var plotText = light ? '#627286' : '#7a8699';
-    var gridColor = light ? 'rgba(27,42,61,0.10)' : 'rgba(255,255,255,0.04)';
+    var plotText=token('--text-2');
+    var gridColor=token('--border');
     // Background
-    ctx.fillStyle = light ? '#fbfcfe' : '#07090f';
+    ctx.fillStyle = token('--bg');
     ctx.fillRect(0, 0, W, H);
 
     // Grid lines
@@ -113,9 +108,9 @@
     });
     var boundaries=[];
     if(limits) {
-      if(showTraces.limits) boundaries.push({name:'CUTOFF',lo:limits.cutoff,hi:1023-limits.cutoff,color:'#ff3d5a'});
-      if(showTraces.clip) boundaries.push({name:'CLIP',lo:limits.clip,hi:1023-limits.clip,color:'#ffb830'});
-      if(showTraces.host && limits.configured) boundaries.push({name:'HOST',lo:limits.min,hi:limits.max,color:'#4fa3ff'});
+      if(showTraces.limits) boundaries.push({name:'CUTOFF',lo:limits.cutoff,hi:1023-limits.cutoff,color:token('--danger')});
+      if(showTraces.clip) boundaries.push({name:'CLIP',lo:limits.clip,hi:1023-limits.clip,color:colors.error});
+      if(showTraces.host && limits.configured) boundaries.push({name:'HOST',lo:limits.min,hi:limits.max,color:colors.target});
     }
     boundaries.forEach(function (b) { b.lo=Angles.value(activeJoint,b.lo); b.hi=Angles.value(activeJoint,b.hi); allVals.push(b.lo,b.hi); });
     if(scale==='full') allVals.push(Angles.value(activeJoint,0),Angles.value(activeJoint,1023));
@@ -145,11 +140,11 @@
     boundaryLabels.sort(function (a,b) {return a.y-b.y;});
     var labelY=-2;
     boundaryLabels.forEach(function (label) {
-      labelY=Math.max(label.y,labelY+14); ctx.font='10px monospace'; ctx.fillStyle=label.color; ctx.textAlign='right';
+      labelY=Math.max(label.y,labelY+14); ctx.font='12px monospace'; ctx.fillStyle=label.color; ctx.textAlign='right';
       ctx.fillText(label.text, W-85,Math.min(H-8,labelY));
     });
     ctx.textAlign='left';
-    if(!visible.length) { ctx.fillStyle=plotText; ctx.font='12px monospace'; ctx.textAlign='center'; ctx.fillText('Waiting for live motor feedback',W/2,H/2); ctx.textAlign='left'; }
+    if(!visible.length) { ctx.fillStyle=plotText; ctx.font='12px monospace'; ctx.textAlign='center'; ctx.fillText('No samples',W/2,H/2); ctx.textAlign='left'; }
 
     function drawTrace(key, colorHex, getValue, lineW) {
       if (!showTraces[key]) return;
@@ -199,7 +194,7 @@
     }
 
     // Numeric axes use the same per-motor angle calibration as the traces.
-    ctx.font = '10px monospace';
+    ctx.font = '12px monospace';
     ctx.fillStyle = plotText;
     ctx.textAlign = 'right';
     for (var tick=1; tick<gridLines; tick++) {
@@ -218,9 +213,9 @@
       if (showTraces.actual) labels.push({ label: 'ACT', val: last.actual.toFixed(1) + Angles.unit(activeJoint), color: colors.actual });
       if (showTraces.target) labels.push({ label: 'TGT', val: last.target.toFixed(1) + Angles.unit(activeJoint), color: colors.target });
       if (showTraces.duty) labels.push({label:'PWM',val:Math.abs(last.duty)+'/255',color:colors.duty});
-      if (frozenAt!==null) labels.push({label:'DISPLAY',val:'FROZEN',color:'#ffb830'});
+      if (frozenAt!==null) labels.push({label:'DISPLAY',val:'FROZEN',color:colors.error});
       if (showTraces.error)  labels.push({ label: 'ERR', val: last.error.toFixed(2) + Angles.unit(activeJoint),  color: colors.error });
-      ctx.font = '10px JetBrains Mono, monospace';
+      ctx.font = '12px JetBrains Mono, monospace';
       var ry = 14;
       labels.forEach(function (l) {
         ctx.fillStyle = l.color;

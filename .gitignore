@@ -1,12 +1,107 @@
+# ==============================================================================
+# SimSync Binaries & Build Output
+# ==============================================================================
 /simsync
-/.hardware-backups/
-/simsync-settings.md
+/simsync.exe
+simsync-build.*
+/build/
+/dist/
+/bin/
 
-# Local build output and reference media
-/simsync-build.*
+# Compiled object / binary files
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries & profiling / coverage reports
+*.test
+*.out
+coverage.txt
+coverage.html
+profile.pprof
+*.prof
+
+# ==============================================================================
+# Go Workspace
+# ==============================================================================
+go.work
+go.work.sum
+
+# ==============================================================================
+# Web UI & Frontend Tooling
+# ==============================================================================
+node_modules/
+/.tmp-ui/
+.parcel-cache/
+.cache/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ==============================================================================
+# Machine Config & Runtime Data
+# ==============================================================================
+/simsync-settings.md
+/.hardware-backups/
 /mediaexamples/
+
+# ==============================================================================
+# SMC3 / Firmware / Embedded Builds
+# ==============================================================================
 /SMC3/**/build/
 /SMC3/**/*.hex
 /SMC3/**/*.elf
 /SMC3/**/*.eep
 /SMC3/**/*.map
+*.hex
+*.elf
+*.eep
+*.map
+
+# ==============================================================================
+# Environment & Local Secrets
+# ==============================================================================
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# ==============================================================================
+# Operating System Artifacts
+# ==============================================================================
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+desktop.ini
+
+# Linux
+*~
+
+# ==============================================================================
+# IDEs & Text Editors
+# ==============================================================================
+# JetBrains (GoLand, etc.)
+.idea/
+*.iml
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Vim / Emacs
+*.swp
+*.swo
+\#*\#
+.\#*

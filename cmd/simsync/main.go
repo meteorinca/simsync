@@ -26,7 +26,8 @@ import (
 	"github.com/meteorinca/simsync/internal/serial"
 	"github.com/meteorinca/simsync/internal/session"
 	"github.com/meteorinca/simsync/internal/settings"
-	"github.com/meteorinca/simsync/webstatic"
+	webstatic "github.com/meteorinca/simsync/web"
+	goserial "go.bug.st/serial"
 )
 
 func main() {
@@ -63,6 +64,7 @@ func main() {
 	var jointStates [3]api.JointMsg // index 0 = joint 1
 	var armed bool
 	var manualMode bool
+	benchMode := *noUDP
 	var estopTripped bool
 	var estopCode int
 	var estopReason string
@@ -139,7 +141,7 @@ func main() {
 			var lastDt time.Time
 			for range ticker.C {
 				mu.Lock()
-				if !armed || estopTripped || manualMode {
+				if !armed || estopTripped || manualMode || benchMode {
 					mu.Unlock()
 					continue
 				}
@@ -242,6 +244,48 @@ func main() {
 
 	// --- API Deps ---
 	deps := &api.Deps{
+		GetSetup: func() interface{} { return profile.Snapshot().Setup },
+		SetSetup: func(j int, direction, tuned bool) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if serialPort_ == nil || !serialPort_.IsConnected() {
+				return fmt.Errorf("connect controller first")
+			}
+			return profile.Update(func(c *settings.Config) { c.Setup[j-1] = settings.SetupProgress{Direction: direction, Tuned: tuned} })
+		},
+		ConnectionInfo: func() (interface{}, error) {
+			ports, err := goserial.GetPortsList()
+			if err != nil {
+				return nil, err
+			}
+			mu.RLock()
+			defer mu.RUnlock()
+			selected := ""
+			if serialPort_ != nil {
+				selected = serialPort_.PortName()
+			}
+			return map[string]interface{}{"ports": ports, "port": selected, "bench": benchMode, "serial_enabled": serialPort_ != nil, "bench_locked": *noUDP}, nil
+		},
+		SetConnection: func(port string, bench bool) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if armed || stepRunner.IsRunning() {
+				return fmt.Errorf("pause motors before changing connection")
+			}
+			if *noUDP && !bench {
+				return fmt.Errorf("restart without --no-udp to enable games")
+			}
+			if serialPort_ == nil {
+				return fmt.Errorf("restart without --no-serial to connect")
+			}
+			if port != serialPort_.PortName() {
+				if err := serialPort_.SelectPort(port); err != nil {
+					return err
+				}
+			}
+			benchMode = bench
+			return nil
+		},
 		SetMotorFilters: func(s serial.MotorFilters) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -292,8 +336,11 @@ func main() {
 			return persist(func(c *settings.Config) { c.Motors[s.Joint-1].Ks = s.Ks; c.Timing = s })
 		},
 		RunSignal: func(j int, mode string, amplitude, period float32) error {
-			if !*noUDP {
-				return fmt.Errorf("restart with --no-udp for bench signals")
+			mu.RLock()
+			bench := benchMode
+			mu.RUnlock()
+			if !bench {
+				return fmt.Errorf("enable bench mode for signals")
 			}
 			if serialPort_ == nil {
 				return fmt.Errorf("serial disabled")
@@ -480,8 +527,11 @@ func main() {
 			return nil
 		},
 		RunStepTest: func(joint int, kp, ki, kd, stepSize float32) error {
-			if !*noUDP {
-				return fmt.Errorf("restart with --no-udp for bench tests")
+			mu.RLock()
+			bench := benchMode
+			mu.RUnlock()
+			if !bench {
+				return fmt.Errorf("enable bench mode for tests")
 			}
 			if serialPort_ == nil {
 				return fmt.Errorf("serial disabled")

@@ -150,6 +150,8 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("/ws", s.Hub.ServeWS)
 
+	mux.HandleFunc("/api/setup", s.Handlers.Setup)
+	mux.HandleFunc("/api/connection", s.Handlers.Connection)
 	mux.HandleFunc("/api/settings", s.Handlers.Settings)
 	mux.HandleFunc("/api/status", s.Handlers.Status)
 	mux.HandleFunc("/api/session", s.Handlers.Session)
@@ -184,7 +186,7 @@ func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		readOnly := r.URL.Path == "/api/settings" || r.URL.Path == "/api/status" || r.URL.Path == "/api/session" || r.URL.Path == "/api/session/export" || r.URL.Path == "/api/controller/stats" || r.URL.Path == "/api/steptest/results" || r.URL.Path == "/api/steptest/status"
 		if strings.HasPrefix(r.URL.Path, "/api/") && !readOnly {
-			readOnly = r.Method == http.MethodGet && (r.URL.Path == "/api/pid" || r.URL.Path == "/api/motors" || r.URL.Path == "/api/motion/config")
+			readOnly = r.Method == http.MethodGet && (r.URL.Path == "/api/setup" || r.URL.Path == "/api/connection" || r.URL.Path == "/api/pid" || r.URL.Path == "/api/motors" || r.URL.Path == "/api/motion/config")
 			if !readOnly && (r.Method != http.MethodPost || r.Header.Get("X-SimSync") != "1") {
 				http.Error(w, "POST with X-SimSync required", http.StatusMethodNotAllowed)
 				return

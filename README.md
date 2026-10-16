@@ -22,7 +22,7 @@ If no board is detected, check `arduino-cli board list` and `/dev/serial/by-id/`
 ### Windows
 
 ```powershell
-go build -o simsync.exe ./cmd/simsync
+.\build.ps1
 .\simsync.exe --serial COM9 --no-udp
 ```
 

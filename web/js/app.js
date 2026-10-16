@@ -14,8 +14,8 @@
   var els = {
     pillSerial: $('pillSerial'), pillUDP: $('pillUDP'), pillArmed: $('pillArmed'),
     estopBtn: $('estopBtn'), estopOverlay: $('estopOverlay'),
-    armBtn: $('armBtn'), disarmBtn: $('disarmBtn'),
-    estopClearBtn: $('estopClearBtn'),
+    armBtn: $('armBtn'), disarmBtn: $('pauseBtn'),
+    estopClearBtn: $('clearStopBtn'),
 
     // Gauges
     gSpeed: $('gSpeed'), gGLat: $('gGLat'), gGLong: $('gGLong'),
@@ -38,7 +38,7 @@
     pidSendBtn: $('pidSendBtn'), pidSaveBtn: $('pidSaveBtn'),
 
     // Step test
-    stepJoint: $('stepJoint'), stepSize: $('stepSize'), stepTestBtn: $('stepTestBtn'),
+    stepSize: $('stepSize'), stepTestBtn: $('stepTestBtn'),
     resultsBody: $('resultsBody'), testRunning: $('testRunning'),
 
     // Status bar
@@ -46,7 +46,7 @@
     sbEStop: $('sbEStop'),
 
     // Export
-    exportBtn: $('exportBtn'),
+    exportBtn: $('tuningCSV'),
 
     // Motion config
     pitchGain: $('pitchGain'), rollGain: $('rollGain'), heaveGain: $('heaveGain'),
@@ -56,7 +56,7 @@
     motionSendBtn: $('motionSendBtn'),
 
     // Direct position
-    manJoint: $('manJoint'), manAngle: $('manPosition'), manGoBtn: $('manGoBtn'),
+    manAngle: $('manPosition'), manGoBtn: $('manGoBtn'),
     stepPlus5: $('stepPlus5'), stepMinus5: $('stepMinus5'),
     stepPlus10: $('stepPlus10'), stepMinus10: $('stepMinus10'),
     centerBtn: $('centerBtn'),
@@ -119,9 +119,10 @@
 
   /* ---- pills ---- */
   function updatePills(f) {
-    setPill(els.pillSerial, f.serial_ok, 'SERIAL', f.serial_ok ? 'OK' : 'DISC');
-    setPill(els.pillUDP, f.udp_hz > 5, 'UDP', f.udp_hz > 5 ? f.udp_hz.toFixed(0) + 'Hz' : 'OFF');
-    setPill(els.pillArmed, f.armed, f.armed ? 'OUTPUT ENABLED' : 'PAUSED', null, f.armed ? 'ok' : 'warn');
+    setPill(els.pillSerial, f.serial_ok, 'Serial', f.serial_ok ? 'Connected' : 'Connecting…');
+    setPill(els.pillUDP, f.udp_hz > 5, 'Telemetry', f.udp_hz > 5 ? f.udp_hz.toFixed(0) + 'Hz' : 'OFF');
+    var solo=motors.findIndex(function(m){return m.solo;});
+    setPill(els.pillArmed, f.armed, f.estop?'Stopped':f.armed?(solo>=0?'Solo · M'+(solo+1):'Running'):'Paused', null, f.estop?'warn':f.armed?'ok':'warn');
   }
 
   function setPill(el, active, label, suffix, forceClass) {
@@ -207,7 +208,7 @@
     }
     if (els.estopBtn) {
       els.estopBtn.classList.toggle('active', estopActive);
-      els.estopBtn.textContent = estopActive ? 'CLEAR PAUSE' : 'LATCH PAUSE';
+      els.estopBtn.textContent = 'STOP';
     }
     if (els.sbEStop) {
       els.sbEStop.textContent = estopActive
@@ -266,11 +267,7 @@
 
   /* ---- Safety controls ---- */
   if (els.estopBtn) els.estopBtn.addEventListener('click', function () {
-    if (estopActive) {
-      apiGet('/api/estop/clear');
-    } else {
-      apiGet('/api/estop?state=1');
-    }
+    apiGet('/api/estop?state=1');
   });
 
   if (els.armBtn) els.armBtn.addEventListener('click', function () {
@@ -283,9 +280,16 @@
     apiGet('/api/estop/clear');
   });
 
+  document.addEventListener('keydown', function (event) {
+    if (event.code === 'Space' || event.key === 'Escape') {
+      event.preventDefault();
+      if (!event.repeat) apiGet('/api/estop?state=1');
+    }
+  }, true);
+
   /* ---- Direct position commands ---- */
   if (els.manGoBtn) els.manGoBtn.addEventListener('click', function () {
-    var j = parseInt(els.manJoint.value, 10) || 1;
+    var j = currentJoint;
     var a = parseFloat(els.manAngle.value);
     apiGet('/api/target?joint=' + j + '&angle=' + a.toFixed(1));
   });
@@ -306,15 +310,15 @@
   });
 
   /* ---- Step Test ---- */
-  if (els.stepTestBtn) els.stepTestBtn.addEventListener('click', function () {
-    var j    = parseInt(els.stepJoint.value, 10) || 1;
-    var step = parseFloat(els.stepSize.value);
-    var kp   = parseFloat(els.kpNum.value);
-    var ki   = parseFloat(els.kiNum.value);
-    var kd   = parseFloat(els.kdNum.value);
-    apiGet('/api/steptest?joint=' + j + '&kp=' + kp + '&ki=' + ki + '&kd=' + kd + '&step=' + step);
-    if (els.testRunning) els.testRunning.style.display = 'inline-block';
-  });
+  function runStep(direction) {
+    var m=motors[currentJoint-1];
+    if(!m || els.stepTestBtn.disabled) return;
+    var step=Math.abs(Number(els.stepSize.value))*direction;
+    if(!Number.isFinite(step) || !step || Math.abs(step)>40) {showError(new Error('Use a step from 1 to 40 counts')); return;}
+    apiGet('/api/steptest?joint='+currentJoint+'&kp='+m.kp+'&ki='+m.ki+'&kd='+m.kd+'&step='+step);
+  }
+  els.stepTestBtn.addEventListener('click',function(){runStep(1);});
+  $('testNegative').addEventListener('click',function(){runStep(-1);});
 
   /* Poll step results every 2s during tests */
   var resultsPending = false;
@@ -329,7 +333,8 @@
 
   function renderResults(results) {
     lastResults = results || [];
-    if (!els.resultsBody || !results || !results.length) return;
+    if (!els.resultsBody) return;
+    results=results||[];
 
     var bestIdx = -1;
     var bestScore = Infinity;
@@ -339,7 +344,7 @@
       if (score < bestScore) { bestScore = score; bestIdx = i; }
     });
 
-    var rows = results.slice(0, 20).map(function (r, i) {
+    var rows = results.filter(function(r){return r.Joint===currentJoint;}).slice(0, 20).map(function (r, i) {
       var cls = i === bestIdx ? 'best' : '';
       return '<tr class="' + cls + '">' +
         '<td>M' + r.Joint + '</td>' +
@@ -350,7 +355,7 @@
         '<td>' + Angles.format(r.Joint, r.SteadyStateErr || 0, true) + '</td>' +
         '</tr>';
     });
-    els.resultsBody.innerHTML = rows.join('');
+    els.resultsBody.innerHTML = rows.join('') || '<tr><td colspan="6">No step tests yet</td></tr>';
   }
 
   /* ---- Motion config sliders ---- */
@@ -469,15 +474,14 @@
     loadedJoint = currentJoint;
   }
   function selectMotor(j) {
+    if (j !== 1 && j !== 2) return;
     currentJoint = j; loadedJoint = 0;
-    els.manJoint.value = j; els.stepJoint.value = j;
+
     els.jointTabs.forEach(function (t) { t.classList.toggle('active', Number(t.dataset.joint) === j); });
     if (window.Scope) Scope.setJoint(j);
     loadMotor();
     refreshAngles();
   }
-  els.manJoint.addEventListener('change', function () { selectMotor(Number(this.value)); });
-  els.stepJoint.addEventListener('change', function () { selectMotor(Number(this.value)); });
   $('pidReadBtn').addEventListener('click', loadMotor);
   $('pdBtn').addEventListener('click', function () { setSliderAndNum(els.kiSlider, els.kiNum, 0); });
   $('captureCenter').addEventListener('click', function () {
@@ -497,7 +501,7 @@
     }
     apiPost('/api/motors', null, { joint: currentJoint, settings: s });
   });
-  $('motorEnable').addEventListener('click', function () { apiGet('/api/motor/solo?joint=' + currentJoint); });
+  $('motorEnable').addEventListener('click', function () { apiGet(motors[currentJoint-1] && motors[currentJoint-1].solo ? '/api/arm?state=0' : '/api/motor/solo?joint=' + currentJoint); });
   $('diagnosticsToggle').addEventListener('change', function () {
     apiPost('/api/diagnostics', null, {enabled: this.checked});
   });
@@ -516,14 +520,14 @@
     var m = motors[currentJoint - 1];
     var jogging = motors.some(function (s) { return s.jogging; });
     motors.forEach(function (motor,index) {
-      $('j'+(index+1)+'State').textContent=!live || !motor.ready?'Waiting for controller':!motor.active?'Not included':motor.disabled?'Disabled':'Enabled';
+      $('j'+(index+1)+'State').textContent=!live || !motor.ready?'':!motor.active?'Not included':motor.disabled?'Disabled':'Enabled';
     });
     var canJog = live && m && m.ready && m.diagnostics && m.jog_supported && m.configured && m.active && !testBusy && !jogging && !jogPending && !latestFrame.estop;
     $('diagnosticsToggle').checked = !!(m && m.diagnostics);
     $('diagnosticsToggle').disabled = !live || !m || !m.jog_supported;
     $('jogMinus').disabled = !canJog; $('jogPlus').disabled = !canJog;
     $('jogStop').disabled = !live || !m || !m.jog_supported;
-    $('jogStatus').textContent = !m || !m.ready ? 'Waiting for controller' : !m.jog_supported ? 'Firmware update required' : jogging ? 'Pulse running' : 'Ready | PWM cap ' + m.pwm_max + '/255';
+    $('jogStatus').textContent = !m || !m.ready ? '' : !m.jog_supported ? 'Firmware update required' : jogging ? 'Pulse running' : 'Ready | PWM cap ' + m.pwm_max + '/255';
     var solo = motors.some(function (motor) { return motor.solo; });
     var move = live && m && m.ready && m.configured && m.active && !m.disabled && latestFrame.armed && !testBusy && (!solo || m.solo);
     [els.manGoBtn, els.centerBtn, els.stepMinus5, els.stepPlus5, els.stepMinus10, els.stepPlus10, els.stepTestBtn].forEach(function (b) { b.disabled = !move; });
@@ -531,7 +535,7 @@
     $('motorEnable').disabled = !live || !m || !m.ready || !m.jog_supported || m.diagnostics || !m.configured || !m.active || latestFrame.estop || testBusy || jogging;
     els.pidSendBtn.disabled = !live || !m || !m.ready || testBusy || jogging;
     els.pidSaveBtn.disabled = !live || latestFrame.armed || testBusy || jogging;
-    if (!live) { setPill(els.pillSerial, false, 'SERIAL', 'DISC'); loadedJoint = 0; }
+    if (!live) { setPill(els.pillSerial, false, 'Serial', 'Connecting…'); loadedJoint = 0; }
   }
   var pollBusy = false;
   setInterval(function () {
@@ -543,14 +547,14 @@
       motors = data[0]; testBusy = data[1].running;
       if(data[2] && data[2].path) { $('settingsFile').textContent='Auto-save · '+data[2].path; }
       if (previousMotor && !previousMotor.configured && motors[currentJoint - 1].configured) loadedJoint = 0;
-      els.testRunning.style.display = testBusy ? 'inline-block' : 'none';
+      els.testRunning.hidden = !testBusy;
       var m = motors[currentJoint - 1];
       if (m && m.ready) {
         $('liveGains').textContent = 'Readback ' + m.kp.toFixed(2) + ' / ' + m.ki.toFixed(2) + ' / ' + m.kd.toFixed(2);
         $('motorState').textContent = 'M' + currentJoint + ' ' + (m.disabled ? 'Disabled' : 'Enabled') + ' | ' + (m.configured ? m.min + '-' + m.max + ' counts' : 'Set host bounds');
         $('firmwareRange').textContent = 'Firmware cutoff ' + m.cutoff + '-' + (1023-m.cutoff) + ' | Clip ' + m.clip + '-' + (1023-m.clip);
         if (loadedJoint !== currentJoint) loadMotor();
-      } else { $('motorState').textContent = 'Waiting for controller'; }
+      } else { $('motorState').textContent = ''; }
       updateControls();
     }).catch(function () {}).finally(function () { pollBusy = false; });
   }, 500);
@@ -588,6 +592,7 @@
   });
   $('angleReset').addEventListener('click',function () {Angles.reset(currentJoint);refreshAngles();});
   window.SimSync = {
+    reloadMotor: loadMotor,
     state: function () { return {frame:latestFrame, motors:motors, joint:currentJoint, testBusy:testBusy, fresh:Date.now()-lastFrameAt<1000}; },
     post: function (path,body) { return apiPost(path,null,body); },
     selectMotor: selectMotor,

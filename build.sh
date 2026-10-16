@@ -1,16 +1,46 @@
 #!/usr/bin/env bash
-# Build SimSync, including the embedded web UI, from any working directory.
+# Build SimSync, including the embedded web UI, for Windows and/or Linux.
 set -euo pipefail
 
-if [[ $# -gt 0 ]]; then
-  if [[ $# -eq 1 && ( $1 == --help || $1 == -h ) ]]; then
-    echo "Usage: ./build.sh"
-    echo "Builds the simsync executable beside this script."
-    exit 0
-  fi
-  echo "Usage: ./build.sh" >&2
-  exit 2
-fi
+TARGET="all"
+
+usage() {
+  cat << 'EOF'
+Usage: ./build.sh [OPTIONS]
+
+Options:
+  --all        Build both Linux (simsync) and Windows (simsync.exe) [default]
+  --linux      Build only Linux executable (simsync)
+  --windows    Build only Windows executable (simsync.exe)
+  -h, --help   Show this help message
+EOF
+  exit 0
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --all)
+      TARGET="all"
+      shift
+      ;;
+    --linux)
+      TARGET="linux"
+      shift
+      ;;
+    --windows)
+      TARGET="windows"
+      shift
+      ;;
+    -h|--help)
+      usage
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      echo "Use --help for usage details." >&2
+      exit 2
+      ;;
+  esac
+done
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
@@ -19,20 +49,43 @@ if ! command -v go >/dev/null 2>&1; then
   exit 1
 fi
 
-# Replace the executable only after a successful build. A running instance
-# continues using its old executable until the user stops and restarts it.
-build_file=$(mktemp ./simsync-build.XXXXXX)
-trap 'rm -f -- "$build_file"' EXIT
+build_target() {
+  local os="$1"
+  local arch="$2"
+  local out="$3"
+  local label="$4"
+  local temp_file="./simsync-build.${os}.${arch}.$$.tmp"
 
-echo "Building SimSync and its web UI..."
-if ! go build -trimpath -buildvcs=false -o "$build_file" ./cmd/simsync; then
-  echo "Build failed. The previous simsync executable is still available." >&2
-  exit 1
+  echo "Building ${label} (${os}/${arch}) -> ${out}..."
+  if ! GOOS="${os}" GOARCH="${arch}" go build -trimpath -buildvcs=false -o "${temp_file}" ./cmd/simsync; then
+    rm -f -- "${temp_file}"
+    echo "Error: Failed to build ${label}." >&2
+    exit 1
+  fi
+
+  if [[ "${os}" != "windows" ]]; then
+    chmod +x "${temp_file}"
+  fi
+
+  mv -f -- "${temp_file}" "${out}"
+  echo "Successfully built ${out}"
+}
+
+echo "=== SimSync Multi-Platform Build ==="
+
+if [[ "$TARGET" == "all" || "$TARGET" == "windows" ]]; then
+  build_target "windows" "amd64" "simsync.exe" "Windows Executable"
 fi
-chmod +x "$build_file"
-mv -f -- "$build_file" ./simsync
 
+if [[ "$TARGET" == "all" || "$TARGET" == "linux" ]]; then
+  build_target "linux" "amd64" "simsync" "Linux Executable"
+fi
+
+echo ""
 echo "Build complete."
-echo "Stop SimSync if it is already running, then start it with:"
-echo "  ./simsync --no-udp"
-echo "For game telemetry, use: ./simsync"
+if [[ "$TARGET" == "all" || "$TARGET" == "windows" ]]; then
+  echo "  Windows: .\\simsync.exe --no-udp"
+fi
+if [[ "$TARGET" == "all" || "$TARGET" == "linux" ]]; then
+  echo "  Linux:   ./simsync --no-udp"
+fi

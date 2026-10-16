@@ -15,7 +15,13 @@ import (
 	"github.com/meteorinca/simsync/internal/serial"
 )
 
+type SetupProgress struct {
+	Direction bool `json:"direction"`
+	Tuned     bool `json:"tuned"`
+}
+
 type Config struct {
+	Setup  [3]SetupProgress
 	Motors [3]serial.MotorSettings
 	Timing serial.ControllerTuning
 	Motion motion.Config
@@ -85,6 +91,9 @@ func setField(object any, f field, text string) error {
 	}
 	return nil
 }
+
+var setupFields = []field{{"Direction confirmed", "Direction"}, {"Tune saved", "Tuned"}}
+
 func Marshal(c Config) []byte {
 	var b strings.Builder
 	b.WriteString("# SimSync settings\n\nLoaded at startup; UI Apply changes save here automatically. Edit while SimSync is stopped.\nPositions and margins are ADC counts. Startup stays paused.\n\n## Motors\n\n| Setting | M1 | M2 | M3 |\n| --- | --- | --- | --- |\n")
@@ -100,6 +109,10 @@ func Marshal(c Config) []byte {
 		for _, f := range section.fields {
 			fmt.Fprintf(&b, "| %s | %s |\n", f.label, textField(section.object, f))
 		}
+	}
+	b.WriteString("\n## Setup\n\n| Setting | M1 | M2 | M3 |\n| --- | --- | --- | --- |\n")
+	for _, f := range setupFields {
+		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", f.label, textField(c.Setup[0], f), textField(c.Setup[1], f), textField(c.Setup[2], f))
 	}
 	return []byte(b.String())
 }
@@ -127,6 +140,9 @@ func Parse(data []byte) (Config, error) {
 		var fields []field
 		var objects []any
 		switch section {
+		case "Setup":
+			fields = setupFields
+			objects = []any{&c.Setup[0], &c.Setup[1], &c.Setup[2]}
 		case "Motors":
 			fields = motorFields
 			objects = []any{&c.Motors[0], &c.Motors[1], &c.Motors[2]}

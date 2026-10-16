@@ -1,197 +1,93 @@
-/* Measured motor tuning with shared controller command gates. */
 (function () {
-  'use strict';
-  var $ = function (id) { return document.getElementById(id); };
-  var tabs = Array.from(document.querySelectorAll('[data-view]'));
-  [['pidPanel','tuningPID'],['limitsPanel','tuningLimits'],['stepPanel','tuningStep'],['testResultsPanel','tuningResults'],['positionPanel','tuningPosition'],['jogPanel','tuningJog'],['mappingPanel','tuningMapping'],['displayPanel','tuningDisplay']].forEach(function (pair) {
-    var node=$(pair[0]);
-    $(pair[1]).append(node);
-    if(node.tagName==='DETAILS') node.open=true;
+ 'use strict';
+ var $=id=>document.getElementById(id), active='dashboard', stats=null, filterJoint=0,timingJoint=0,signalPending=false,best=null;
+ var tabs=Array.from(document.querySelectorAll('[data-view]'));
+ function view(name){
+  active=name;
+  tabs.forEach(tab=>{var selected=tab.dataset.view===name;tab.setAttribute('aria-selected',selected);tab.tabIndex=selected?0:-1;$(tab.dataset.view+'View').hidden=!selected;});
+  var motorHost=name==='tuning'?$('motorToolbar'):name==='settings'?$('settingsMotor'):name==='setup'?$('setupMotor'): $('driveMotor');
+  motorHost.append($('tuningMotors'));
+  if(name==='dashboard' || name==='tuning') (name==='tuning'?$('tuneScope'):$('dashboardView')).prepend($('scopePanel'));
+  ['scopeTools','tuningMetrics'].forEach(id=>$(id).hidden=name!=='tuning');
+  Scope.resize();
+ }
+ window.Workspace={view};
+ tabs.forEach((tab,index)=>{
+  tab.addEventListener('click',()=>view(tab.dataset.view));
+  tab.addEventListener('keydown',e=>{
+   var i=e.key==='ArrowRight'?(index+1)%tabs.length:e.key==='ArrowLeft'?(index+tabs.length-1)%tabs.length:e.key==='Home'?0:e.key==='End'?tabs.length-1:-1;
+   if(i>=0){e.preventDefault();tabs[i].focus();view(tabs[i].dataset.view);}
   });
-  var active=false, timingJoint=0, filterJoint=0, stats=null, pending=false, signalPending=false;
-  var bestMeasured=null;
-  [1,2,3].forEach(function (joint) {
-    var button=document.createElement('button');
-    button.className='tuning-motor';
-    button.innerHTML='<strong>M'+joint+' · '+['Front left','Front right','Rear'][joint-1]+'</strong><span></span>';
-    button.dataset.motor=joint;
-    button.addEventListener('click',function () { SimSync.selectMotor(joint); });
-    $('tuningMotors').append(button);
-  });
-  $('tuningEnable').addEventListener('click',function () { $('motorEnable').click(); });
-  $('soloStop').addEventListener('click',function () { SimSync.post('/api/arm?state=0'); });
-  function loadFilters() {
-    var s=SimSync.state(), m=s.motors[s.joint-1];
-    if(!s.fresh || !m || !m.filters_ready) return;
-    $('filterLPF').value=m.lpf_hz;
-    $('filterHPF').value=m.hpf_hz;
-    filterJoint=s.joint;
+ });
+ // M3 remains supported by the controller, but is not exposed in the workspace.
+ [1,2].forEach(j=>{
+  var b=document.createElement('button');b.className='tuning-motor';b.innerHTML='<strong>M'+j+'</strong><span></span>';
+  b.addEventListener('click',()=>{SimSync.selectMotor(j);filterJoint=timingJoint=0;});$('tuningMotors').append(b);
+ });
+ $('scopeScale').addEventListener('change',function(){Scope.setScale(this.value);});
+ $('scopeFreeze').addEventListener('click',function(){var frozen=Scope.freeze();this.textContent=frozen?'Resume display':'Freeze display';this.setAttribute('aria-pressed',frozen);});
+ $('scopeImage').addEventListener('click',()=>Scope.saveImage());
+ $('editTravel').addEventListener('click',()=>{view('setup');Setup.step(2);});
+ function loadFilters(){var s=SimSync.state(),m=s.motors[s.joint-1];if(!m?.filters_ready)return;$('filterLPF').value=m.lpf_hz;$('filterHPF').value=m.hpf_hz;filterJoint=s.joint;}
+ $('filterRead').addEventListener('click',loadFilters);
+ $('filterApply').addEventListener('click',()=>{
+  if(['filterLPF','filterHPF'].some(id=>$(id).value==='')){SimSync.error(new Error('Enter both filter values'));return;}
+  SimSync.post('/api/motor/filters',{joint:SimSync.state().joint,lpf_hz:Number($('filterLPF').value),hpf_hz:Number($('filterHPF').value)});
+ });
+ function loadTiming(){var s=SimSync.state(),m=s.motors[s.joint-1];if(!m?.timing_ready || !stats?.timing_ready)return;
+  $('tuningKs').value=m.ks;$('tuningDivider').value=stats.pid_divider;$('tuningPWM12').value=stats.pwm_12_khz;$('tuningPWM3').value=stats.pwm_3_khz>=15?'31':'4';timingJoint=s.joint;}
+ $('timingRead').addEventListener('click',loadTiming);
+ $('timingApply').addEventListener('click',()=>SimSync.post('/api/controller/tuning',{joint:SimSync.state().joint,ks:Number($('tuningKs').value),divider:Number($('tuningDivider').value),pwm_12_khz:Number($('tuningPWM12').value),pwm_3_khz:Number($('tuningPWM3').value)}));
+ $('signalStart').addEventListener('click',()=>{signalPending=true;SimSync.post('/api/signal',{joint:SimSync.state().joint,mode:$('signalMode').value,amplitude:Number($('signalAmplitude').value),period:Number($('signalPeriod').value)}).finally(()=>signalPending=false);});
+ $('stageMeasured').addEventListener('click',()=>{
+  if(!best || best.Joint!==SimSync.state().joint)return;
+  ['kp','ki','kd'].forEach(k=>{$(k+'Num').value=best[k[0].toUpperCase()+k.slice(1)];$(k+'Num').dispatchEvent(new Event('change'));});
+ });
+ function gate(id,enabled,reason){$(id).disabled=!enabled;$(id).title=enabled?'':reason;}
+ var fields=['kpNum','kiNum','kdNum','motorMin','motorMax','motorCenter','pwmMin','pwmMax','pwmRev','motorCutoff','motorClip','motorDeadzone','filterLPF','filterHPF'];
+ var exportButton=document.createElement('button');exportButton.className='btn';exportButton.textContent='Export profile';
+ exportButton.onclick=()=>{var values={};fields.forEach(id=>values[id]=$(id).value);var url=URL.createObjectURL(new Blob([JSON.stringify({version:1,motor:SimSync.state().joint,values},null,2)],{type:'application/json'}));var a=document.createElement('a');a.href=url;a.download='simsync-m'+SimSync.state().joint+'.json';a.click();URL.revokeObjectURL(url);};
+ var importLabel=document.createElement('label');importLabel.textContent='Import profile ';var input=document.createElement('input');input.type='file';input.accept='.json';input.setAttribute('aria-label','Import motor profile');importLabel.append(input);
+ input.onchange=async()=>{try{var data=JSON.parse(await input.files[0].text());if(data.version!==1 || fields.some(id=>data.values?.[id]==='' || !Number.isFinite(Number(data.values?.[id]))))throw new Error('Invalid profile');fields.forEach(id=>{$(id).value=data.values[id];$(id).dispatchEvent(new Event('change'));});$('commandStatus').textContent='Profile staged. Review before applying.';}catch(e){SimSync.error(e);}input.value='';};
+ $('profileControls').append(exportButton,importLabel);
+ async function readStats(){try{var r=await fetch('/api/controller/stats',{signal:AbortSignal.timeout(2000)});stats=r.ok?await r.json():null;}catch{stats=null;}}
+ readStats();setInterval(readStats,2500);
+ function update(){
+  var s=SimSync.state(),f=s.frame,m=s.motors[s.joint-1],live=!!(s.fresh&&f?.serial_ok&&m?.ready),moving=s.testBusy||signalPending||s.motors.some(v=>v.jogging);
+  Array.from($('tuningMotors').children).forEach((b,i)=>{b.setAttribute('aria-pressed',s.joint===i+1);var v=s.motors[i];b.querySelector('span').textContent=!live?'':!v?.active?'Excluded':v.disabled?'Paused':'Running';});
+  $('motorEnable').setAttribute('aria-pressed',!!m?.solo);
+  $('motorEnable').title=$('motorEnable').disabled?'Check travel, disable jog, and clear stop.':'Other motors are held while solo is on.';
+  gate('testNegative',!$('stepTestBtn').disabled,'Enable Solo to test this motor.');
+  $('stepTestBtn').title=$('stepTestBtn').disabled?'Enable Solo to test this motor.':'';
+  gate('filterApply',live&&m.filters_ready&&m.disabled&&!f.armed&&!m.diagnostics&&!moving,'Pause motors and disable jog to apply.');
+  gate('filterRead',live&&m.filters_ready,'Connect a controller with filter support.');
+  gate('timingApply',live&&!f.armed&&!moving&&!m.diagnostics&&m.timing_ready&&stats?.timing_ready,'Pause motors and disable jog to apply.');
+  gate('signalStart',live&&f.armed&&!f.estop&&m.configured&&m.active&&!m.disabled&&!m.diagnostics&&!moving,'Enable Solo and bench mode first.');
+  $('filterTitle').textContent='M'+s.joint+' filters';$('filterReadback').textContent=live&&m.filters_ready?'Live: LPF '+m.lpf_hz+' Hz · HPF '+m.hpf_hz+' Hz':'';
+  $('timingReadback').textContent=live&&stats?.timing_ready?'Live: Ks '+m.ks+' · Fpid '+stats.pid_divider:'';
+  $('controllerInfo').textContent=live&&stats?'Firmware '+stats.firmware+' · '+stats.port:'';
+  if(!live){filterJoint=timingJoint=0;}else{if(filterJoint!==s.joint)loadFilters();if(timingJoint!==s.joint)loadTiming();}
+  $('signalState').textContent=signalPending?'Signal running':'Use bench mode for signals.';
+  var diff=live?['kp','ki','kd'].filter(k=>Number($(k+'Num').value)!==m[k]).map(k=>k[0].toUpperCase()+k.slice(1)+' '+m[k].toFixed(2)+' → '+Number($(k+'Num').value).toFixed(2)):[];
+  $('gainDiff').textContent=diff.join(' · ') || (live?'Matches live gains':'');
+  $('pidSendBtn').title=$('pidSendBtn').disabled?'Connect a ready motor and finish any test.':'';
+  var results=SimSync.results().filter(r=>r.Joint===s.joint),last=results[0],matching=last?results.filter(r=>r.StepSize===last.StepSize):[];
+  best=matching.filter(r=>r.Success).sort((a,b)=>(a.OvershootPct*2+a.SettleTimeMs/100+a.SteadyStateErr*10)-(b.OvershootPct*2+b.SettleTimeMs/100+b.SteadyStateErr*10))[0];
+  gate('stageMeasured',!!best&&live&&!moving,'Run a settled step first.');
+  var verdict='Run a small step.',hint='',state='';
+  if(last){
+   if(!last.Success){verdict='✕ Did not settle';hint='Check direction and travel before changing gains.';state='bad';}
+   else if(last.OvershootPct>10){verdict='⚠ Overshoot '+last.OvershootPct.toFixed(0)+'%';hint='Add a little Kd, then step again.';state='warn';}
+   else if(last.RiseTimeMs>500){verdict='⚠ Slow response';hint='Raise Kp about 5%, then step again.';state='warn';}
+   else{verdict='✓ Settled';state='ok';}
   }
-  $('filterRead').addEventListener('click',loadFilters);
-  $('filterApply').addEventListener('click',function () {
-    if($('filterLPF').value==='' || $('filterHPF').value==='') { SimSync.error(new Error('Enter both filter cutoffs; 0 disables a filter')); return; }
-    SimSync.post('/api/motor/filters',{joint:SimSync.state().joint,lpf_hz:Number($('filterLPF').value),hpf_hz:Number($('filterHPF').value)});
-  });
-  ['Positive','Negative'].forEach(function (direction) {
-    $('test'+direction).addEventListener('click',function () {
-      $('stepSize').value=Math.abs(Number($('stepSize').value))*(direction==='Positive'?1:-1);
-      $('stepTestBtn').click();
-    });
-  });
-  $('stageMeasured').addEventListener('click',function () {
-    if(!bestMeasured || bestMeasured.Joint!==SimSync.state().joint) return;
-    [['kp',bestMeasured.Kp],['ki',bestMeasured.Ki],['kd',bestMeasured.Kd]].forEach(function (pair) {
-      $(pair[0]+'Num').value=pair[1];
-      $(pair[0]+'Num').dispatchEvent(new Event('change'));
-    });
-    $('commandStatus').textContent='Measured M'+bestMeasured.Joint+' gains staged · Apply Gains to send';
-  });
-  function updateResponse(s,m,live) {
-    Array.from($('tuningMotors').children).forEach(function (button,index) {
-      var motor=s.motors[index];
-      button.setAttribute('aria-pressed',String(s.joint===index+1));
-      button.querySelector('span').textContent=!s.fresh || !s.frame || !s.frame.serial_ok || !motor || !motor.ready?'Waiting for readback':!motor.active?'Excluded · select and Apply Limits':motor.disabled?'Included · firmware disabled':'Included · PID enabled';
-    });
-    $('tuningEnable').textContent='Run only M'+s.joint;
-    $('tuningEnable').disabled=$('motorEnable').disabled;
-    $('testPositive').disabled=$('stepTestBtn').disabled;
-    $('testNegative').disabled=$('stepTestBtn').disabled;
-    var results=(SimSync.results()||[]).filter(function (r) {return r.Joint===s.joint;});
-    var latest=results[0];
-    // Different amplitudes/directions are different experiments, not competing gains.
-    var comparable=latest?results.filter(function (r) {return r.StepSize===latest.StepSize;}):[];
-    bestMeasured=comparable.filter(function (r) {return r.Success;}).sort(function (a,b) {
-      return (a.OvershootPct*2+a.SettleTimeMs/100+a.SteadyStateErr*10)-(b.OvershootPct*2+b.SettleTimeMs/100+b.SteadyStateErr*10);
-    })[0]||null;
-    $('stageMeasured').disabled=!bestMeasured || !live || s.testBusy;
-    $('responseTitle').textContent='M'+s.joint+' · measured response';
-    var advice=!live?'Waiting for live motor feedback.':!m.active?'Include M'+s.joint+' in output under Motor limits, then Apply Limits while paused.':m.disabled?'Use Run only M'+s.joint+' after verifying feedback direction and travel bounds.':!latest?'Run a small step in each direction to establish a baseline.':!latest.Success?'Last step did not reach or settle at the target. Inspect the trace for stalled motion or ringing before changing gains.':latest.OvershootPct>10?'Overshoot exceeds 10%. Try a small increase in Kd, or reduce Kp, and repeat the same step.':latest.SteadyStateErr>2?'Residual tracking error exceeds 2 counts. Check friction and PWM minimum; evaluate a small Ki only after the PD response is stable.':'Response reached and settled. Compare rise and settling time, then validate the opposite direction and a slow signal under load.';
-    $('tuningAdvice').textContent=advice;
-    function summary(r) {return 'P '+r.Kp+' / I '+r.Ki+' / D '+r.Kd+' · rise '+(r.RiseTimeMs<0?'unreached':Math.round(r.RiseTimeMs)+' ms')+' · overshoot '+r.OvershootPct.toFixed(1)+'% · settle '+(r.SettleTimeMs<0?'unsettled':Math.round(r.SettleTimeMs)+' ms')+' · error '+r.SteadyStateErr.toFixed(1)+' counts';}
-    $('responseComparison').textContent=latest?'Last '+latest.StepSize+' count step: '+summary(latest)+(bestMeasured?' | Best of '+comparable.length+' matching steps: '+summary(bestMeasured):' | No successful matching step yet.'):'No recorded steps for M'+s.joint+'.';
-  }
-  function view(name) {
-    if(active===(name==='tuning')) return;
-    active=name==='tuning';
-    document.body.classList.toggle('tuning',active);
-    ['tuningPanel','tuningIntro','scopeTools','tuningMetrics'].forEach(function (id) { $(id).hidden=!active; });
-    tabs.forEach(function (tab) { var selected=tab.dataset.view===name; tab.classList.toggle('active',selected); tab.setAttribute('aria-selected',String(selected)); tab.tabIndex=selected?0:-1; });
-    if(window.Scope) Scope.resize();
-  }
-  tabs.forEach(function (tab,index) {
-    tab.addEventListener('click',function () { view(tab.dataset.view); });
-    tab.addEventListener('keydown',function (e) {
-      var next;
-      if(e.key==='ArrowRight' || e.key==='ArrowLeft') next=tabs[(index+1)%tabs.length];
-      else if(e.key==='Home') next=tabs[0]; else if(e.key==='End') next=tabs[tabs.length-1];
-      if(next) { e.preventDefault(); next.focus(); view(next.dataset.view); }
-    });
-  });
-  $('scopeScale').addEventListener('change',function () { Scope.setScale(this.value); });
-  // Tuning should start with the three traces that answer "is it following?".
-  ['limits','clip','host'].forEach(function (name) { Scope.setTrace(name,true); var button=document.querySelector('[data-trace="'+name+'"]'); if(button) { button.classList.add('active'); button.setAttribute('aria-pressed','true'); } });
-  $('scopeFreeze').addEventListener('click',function () { var frozen=Scope.freeze(); this.textContent=frozen?'Resume display':'Freeze display'; this.setAttribute('aria-pressed',String(frozen)); });
-  $('scopeImage').addEventListener('click',function () { Scope.saveImage(); });
-  $('tuningCSV').addEventListener('click',function () { window.open('/api/session/export','_blank'); });
-  function loadTiming() {
-    var s=SimSync.state(), m=s.motors[s.joint-1];
-    if(!m || !m.timing_ready || !stats || !stats.timing_ready) return;
-    $('tuningKs').value=m.ks;
-    $('tuningDivider').value=stats.pid_divider;
-    $('tuningPWM12').value=stats.pwm_12_khz;
-    $('tuningPWM3').value=stats.pwm_3_khz>=15?'31':'4';
-    timingJoint=s.joint;
-  }
-  $('timingRead').addEventListener('click',loadTiming);
-  $('timingApply').addEventListener('click',function () {
-    SimSync.post('/api/controller/tuning',{joint:SimSync.state().joint,ks:Number($('tuningKs').value),divider:Number($('tuningDivider').value),pwm_12_khz:Number($('tuningPWM12').value),pwm_3_khz:Number($('tuningPWM3').value)});
-  });
-  $('signalStart').addEventListener('click',function () {
-    signalPending=true;
-    $('signalStart').disabled=true;
-    $('signalState').textContent='Signal running · Stop / Pause aborts movement';
-    SimSync.post('/api/signal',{joint:SimSync.state().joint,mode:$('signalMode').value,amplitude:Number($('signalAmplitude').value),period:Number($('signalPeriod').value)})
-      .finally(function () { signalPending=false; $('signalState').textContent='Monitor · signal finished or stopped; command status shows outcome'; });
-  });
-  $('signalStop').addEventListener('click',function () { SimSync.post('/api/arm?state=0'); });
-
-  function updateClipReadback(m) {
-    var summary=$('clipSummary'), health=$('clipHealth');
-    if(!m || !m.ready) { summary.textContent='Waiting for motor readback'; health.textContent='Clipping guidance will appear when connected.'; health.className='clip-health'; return; }
-    var cutoffLo=Number(m.cutoff), cutoffHi=1023-cutoffLo;
-    var clipLo=Number(m.clip), clipHi=1023-clipLo;
-    var hostLo=Number(m.min), hostHi=Number(m.max);
-    summary.innerHTML='Cutoff <b>'+cutoffLo+'–'+cutoffHi+'</b><br>Input clip <b>'+clipLo+'–'+clipHi+'</b><br>Host target <b>'+hostLo+'–'+hostHi+'</b>';
-    var issues=[];
-    if(cutoffLo>=clipLo) issues.push('cutoff must be inside clip');
-    if(hostLo<clipLo+4 || hostHi>clipHi-4) issues.push('host bounds need ≥4 counts inside clip');
-    if(hostLo>=hostHi) issues.push('host range is inverted');
-    if(Number(m.pwm_max)>=250) issues.push('PWM max is near full scale; check current draw');
-    if(issues.length) { health.textContent='CHECK · '+issues.join(' · '); health.className='clip-health '+(issues.some(function (v) { return v.indexOf('cutoff')>=0 || v.indexOf('inverted')>=0; })?'bad':'warn'); }
-    else { health.textContent='GOOD · target stays clear of the safety cutoff'; health.className='clip-health'; }
-  }
-
-  // Local profiles stage edits; loading never sends commands or enables a motor.
-  var profileFields=['kpNum','kiNum','kdNum','motorMin','motorMax','motorCenter','pwmMin','pwmMax','pwmRev','motorCutoff','motorClip','motorDeadzone','filterLPF','filterHPF'];
-  var row=document.createElement('div'); row.className='btn-row';
-  ['Save profile','Load profile'].forEach(function (label,index) {
-    var btn=document.createElement('button'); btn.className='btn'; btn.textContent=label;
-    btn.addEventListener('click',function () {
-      try {
-        var key='simsync.tuning.profile.m'+SimSync.state().joint;
-        if(index===0) {
-          var values={}; profileFields.forEach(function (id) { values[id]=$(id).value; });
-          localStorage.setItem(key,JSON.stringify(values));
-          $('commandStatus').textContent='Profile saved in this browser for M'+SimSync.state().joint;
-        } else {
-          var raw=localStorage.getItem(key); if(!raw) throw new Error('No browser profile for this motor yet');
-          var values=JSON.parse(raw);
-          ['filterLPF','filterHPF'].forEach(function (id) {if(values[id]===undefined) values[id]=0;});
-          if(profileFields.some(function (id) { return values[id]==='' || !Number.isFinite(Number(values[id])); })) throw new Error('Invalid saved profile');
-          profileFields.forEach(function (id) { $(id).value=values[id]; $(id).dispatchEvent(new Event('change')); });
-          $('commandStatus').textContent='Profile loaded into fields · Apply Gains / Limits / Filters to send';
-        }
-      } catch(e) { SimSync.error(e); }
-    });
-    row.append(btn);
-  });
-  $('pidPanel').append(row);
-  var note=document.createElement('p'); note.className='control-note'; note.textContent='P20 / D0.4 loads your reported stable gains into the form. Apply Gains sends them. Apply saves tuning to the Markdown file for restart. Profiles save drafts in this browser; EEPROM saves firmware values.'; $('pidPanel').append(note);
-
-  setInterval(function () {
-    var s=SimSync.state(), f=s.frame, m=s.motors[s.joint-1];
-    var live=s.fresh && f && f.serial_ok && m && m.ready;
-    if(window.Scope) Scope.setLimits(live?m:null);
-    updateClipReadback(live?m:null);
-    var moving=s.testBusy || signalPending || s.motors.some(function (v) {return v.jogging;});
-    var soloIndex=s.motors.findIndex(function (v) {return v.solo;});
-    $('soloState').textContent=soloIndex>=0?'Running only M'+(soloIndex+1)+' · manual/test output · other motors stopped · Pause stops all; Resume enables all included motors.':'Solo mode stops the other motors and enables manual/test output for one motor. Pause stops it. Resume returns to all included motors.';
-    $('soloStop').disabled=!s.fresh || !f || !f.serial_ok;
-    $('filterTitle').textContent='M'+s.joint+' · feedback filters';
-    $('filterApply').disabled=!live || !m.filters_ready || !m.disabled || f.armed || m.diagnostics || moving;
-    $('filterRead').disabled=!live || !m.filters_ready;
-    $('filterReadback').textContent=!live?'Waiting for live feedback':!m.filters_supported?'Upload updated SMC3 firmware for LPF / HPF':!m.filters_ready?'Waiting for filter readback':'Readback M'+s.joint+' · feedback LPF '+(m.lpf_hz?m.lpf_hz+' Hz':'off')+' · derivative HPF '+(m.hpf_hz?m.hpf_hz+' Hz':'off');
-    if(!live) filterJoint=0;
-    else if(filterJoint!==s.joint) loadFilters();
-    $('signalStart').disabled=!live || !f.armed || f.estop || !m.configured || !m.active || m.disabled || m.diagnostics || moving;
-    $('signalStop').disabled=!live;
-    $('timingApply').disabled=!live || f.armed || moving || m.diagnostics || !m.timing_ready || !stats || !stats.timing_ready;
-    if(!live) { timingJoint=0; $('controllerInfo').textContent='Controller disconnected · waiting for live feedback'; $('timingReadback').textContent='Waiting for timing readback'; }
-    if(!active) return;
-    updateResponse(s,m,live);
-    if(live && stats) {
-      $('controllerInfo').textContent=stats.controller+' · firmware '+stats.firmware+' · '+(stats.port||'USB')+' · '+stats.baud.toLocaleString()+' baud';
-      $('timingReadback').textContent=stats.timing_ready && m.timing_ready ? 'Readback M'+s.joint+' · Ks '+m.ks+' · Fpid / '+stats.pid_divider+' · PWM M1/2 '+stats.pwm_12_khz+' kHz / M3 '+(stats.pwm_3_khz>=15?'31.25':'3.906')+' kHz' : 'Waiting for timing readback';
-      if(timingJoint!==s.joint) loadTiming();
-    }
-    if(window.Scope) {
-      var metric=Scope.metrics(5);
-      $('trackingRMS').textContent='RMS error '+(metric?Angles.format(s.joint,metric.rms,true):'—');
-      $('trackingPeak').textContent='Peak error '+(metric?Angles.format(s.joint,metric.peak,true):'—');
-      $('trackingPWM').textContent='Peak PWM '+(metric?metric.pwm+'/255':'—');
-    }
-    if(pending) return;
-    pending=true;
-    fetch('/api/controller/stats',{signal:AbortSignal.timeout(2000)}).then(function (r) {if(!r.ok) throw new Error('Disconnected'); return r.json();}).then(function (v) {stats=v;}).catch(function () {stats=null; timingJoint=0;}).finally(function () {pending=false;});
-  },500);
+  var metric=live?Scope.metrics(5):null;
+  if(s.testBusy&&metric&&metric.pwm>=m.pwm_max){verdict='⚠ PWM saturated';hint='Lower Kp, or raise PWM max by 5 to 10.';state='warn';}
+  $('tuningAdvice').textContent=last||s.testBusy?verdict:'';$('tuningAdvice').className=state;$('tuningAdvice').title=hint;
+  $('responseComparison').textContent=last?'Rise '+Math.round(last.RiseTimeMs)+' ms · Overshoot '+last.OvershootPct.toFixed(1)+'% · Settle '+Math.round(last.SettleTimeMs)+' ms':'';
+  gate('saveTune',live&&!!last?.Success&&!moving&&!diff.length&&['kp','ki','kd'].every(k=>m[k]===last[k[0].toUpperCase()+k.slice(1)]),'Run a settled step with the live gains first.');
+  Scope.setLimits(live?m:null);
+  $('trackingRMS').textContent='RMS '+(metric?metric.rms.toFixed(1):'-')+' counts';$('trackingPeak').textContent='Peak error '+(metric?metric.peak.toFixed(1):'-');$('trackingPWM').textContent='Peak PWM '+(metric?metric.pwm:'-');
+ }
+ setInterval(update,500);view('dashboard');
 })();
