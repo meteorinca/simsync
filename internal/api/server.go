@@ -150,6 +150,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("/ws", s.Hub.ServeWS)
 
+	mux.HandleFunc("/api/settings", s.Handlers.Settings)
 	mux.HandleFunc("/api/status", s.Handlers.Status)
 	mux.HandleFunc("/api/session", s.Handlers.Session)
 	mux.HandleFunc("/api/session/export", s.Handlers.SessionExport)
@@ -163,9 +164,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/steptest/results", s.Handlers.StepResults)
 	mux.HandleFunc("/api/sweep", s.Handlers.Sweep)
 	mux.HandleFunc("/api/motion/config", s.Handlers.MotionConfig)
+	mux.HandleFunc("/api/controller/tuning", s.Handlers.ControllerTuning)
+	mux.HandleFunc("/api/signal", s.Handlers.Signal)
 	mux.HandleFunc("/api/controller/stats", s.Handlers.ControllerStats)
 	mux.HandleFunc("/api/motors", s.Handlers.Motors)
 	mux.HandleFunc("/api/motor/enable", s.Handlers.MotorEnable)
+	mux.HandleFunc("/api/motor/solo", s.Handlers.MotorSolo)
+	mux.HandleFunc("/api/motor/filters", s.Handlers.MotorFilters)
 	mux.HandleFunc("/api/jog", s.Handlers.Jog)
 	mux.HandleFunc("/api/jog/stop", s.Handlers.JogStop)
 	mux.HandleFunc("/api/diagnostics", s.Handlers.Diagnostics)
@@ -177,7 +182,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/", http.FileServer(http.FS(s.WebFS)))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		readOnly := r.URL.Path == "/api/status" || r.URL.Path == "/api/session" || r.URL.Path == "/api/session/export" || r.URL.Path == "/api/controller/stats" || r.URL.Path == "/api/steptest/results" || r.URL.Path == "/api/steptest/status"
+		readOnly := r.URL.Path == "/api/settings" || r.URL.Path == "/api/status" || r.URL.Path == "/api/session" || r.URL.Path == "/api/session/export" || r.URL.Path == "/api/controller/stats" || r.URL.Path == "/api/steptest/results" || r.URL.Path == "/api/steptest/status"
 		if strings.HasPrefix(r.URL.Path, "/api/") && !readOnly {
 			readOnly = r.Method == http.MethodGet && (r.URL.Path == "/api/pid" || r.URL.Path == "/api/motors" || r.URL.Path == "/api/motion/config")
 			if !readOnly && (r.Method != http.MethodPost || r.Header.Get("X-SimSync") != "1") {

@@ -9,6 +9,9 @@ import (
 func (p *Port) SetDiagnostics(enabled bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if enabled && !p.autoConfigured {
+		return fmt.Errorf("waiting for saved settings to restore")
+	}
 	if !p.jogSupported {
 		return fmt.Errorf("upload SMC3 firmware with timed jog support")
 	}

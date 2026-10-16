@@ -1,2 +1,12 @@
 /simsync
 /.hardware-backups/
+/simsync-settings.md
+
+# Local build output and reference media
+/simsync-build.*
+/mediaexamples/
+/SMC3/**/build/
+/SMC3/**/*.hex
+/SMC3/**/*.elf
+/SMC3/**/*.eep
+/SMC3/**/*.map

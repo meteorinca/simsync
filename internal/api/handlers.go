@@ -11,10 +11,15 @@ import (
 
 // Deps are the live service references handlers need.
 type Deps struct {
+	SettingsInfo      func() interface{}
 	GetSessionSamples func(n int) interface{}
 	ExportSessionCSV  func(w http.ResponseWriter)
 	GetPID            func() (kp, ki, kd float32)
 	SetPID            func(joint int, kp, ki, kd float32) error
+	TuneController    func(serial.ControllerTuning) error
+	SetMotorFilters   func(serial.MotorFilters) error
+	SoloMotor         func(int) error
+	RunSignal         func(int, string, float32, float32) error
 	GetMotors         func() interface{}
 	ConfigureMotor    func(int, serial.MotorSettings) error
 	EnableMotor       func(int) error
@@ -229,6 +234,36 @@ func (h *Handlers) MotorEnable(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
+func (h *Handlers) MotorSolo(w http.ResponseWriter, r *http.Request) {
+	j, err := strconv.Atoi(r.URL.Query().Get("joint"))
+	if err != nil || j < 1 || j > 3 {
+		writeErr(w, 400, "motor 1-3 required")
+		return
+	}
+	if err := h.d.SoloMotor(j); err != nil {
+		writeErr(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, map[string]interface{}{"ok": true, "solo_motor": j, "armed": true})
+}
+
+func (h *Handlers) MotorFilters(w http.ResponseWriter, r *http.Request) {
+	var s serial.MotorFilters
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&s); err != nil {
+		writeErr(w, 400, "invalid motor filters")
+		return
+	}
+	if err := s.Validate(); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if err := h.d.SetMotorFilters(s); err != nil {
+		writeErr(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
 func (h *Handlers) Jog(w http.ResponseWriter, r *http.Request) {
 	var b struct {
 		Joint    int `json:"joint"`
@@ -356,4 +391,38 @@ func parsePIDParams(r *http.Request) (kp, ki, kd float32, err error) {
 		return 0, 0, 0, fmt.Errorf("kp, ki, kd required (query or JSON body)")
 	}
 	return float32(kp64), float32(ki64), float32(kd64), nil
+}
+
+func (h *Handlers) ControllerTuning(w http.ResponseWriter, r *http.Request) {
+	var s serial.ControllerTuning
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&s); err != nil {
+		writeErr(w, 400, "invalid timing settings")
+		return
+	}
+	if err := h.d.TuneController(s); err != nil {
+		writeErr(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+func (h *Handlers) Signal(w http.ResponseWriter, r *http.Request) {
+	var s struct {
+		Joint     int     `json:"joint"`
+		Mode      string  `json:"mode"`
+		Amplitude float32 `json:"amplitude"`
+		Period    float32 `json:"period"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&s); err != nil {
+		writeErr(w, 400, "invalid test signal")
+		return
+	}
+	if err := h.d.RunSignal(s.Joint, s.Mode, s.Amplitude, s.Period); err != nil {
+		writeErr(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *Handlers) Settings(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, h.d.SettingsInfo())
 }

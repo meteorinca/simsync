@@ -8,10 +8,12 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"syscall"
@@ -23,6 +25,7 @@ import (
 	"github.com/meteorinca/simsync/internal/pid"
 	"github.com/meteorinca/simsync/internal/serial"
 	"github.com/meteorinca/simsync/internal/session"
+	"github.com/meteorinca/simsync/internal/settings"
 	"github.com/meteorinca/simsync/webstatic"
 )
 
@@ -36,7 +39,20 @@ func main() {
 	noUDP := flag.Bool("no-udp", false, "Disable game bridge (bench / calibration mode)")
 	sessionSec := flag.Int("session-sec", 300, "Session ring buffer duration in seconds")
 	openBrowser := flag.Bool("open-browser", true, "Open dashboard in browser on start")
+	settingsPath := flag.String("settings", "", "Markdown settings file; default simsync-settings.md beside the executable")
 	flag.Parse()
+	if *settingsPath == "" {
+		executable, err := os.Executable()
+		if err != nil {
+			log.Fatal(err)
+		}
+		*settingsPath = filepath.Join(filepath.Dir(executable), "simsync-settings.md")
+	}
+	profile, err := settings.Open(*settingsPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("[settings] loaded %s (UI Apply saves automatically)", profile.Path())
 
 	log.Printf("SimSync starting - dashboard will be at http://localhost:%d", *httpPort)
 
@@ -56,7 +72,7 @@ func main() {
 
 	// --- Services ---
 	store := session.New(*sessionSec * 100) // ~100 samples/sec max
-	engine := motion.NewEngine(motion.DefaultConfig())
+	engine := motion.NewEngine(profile.Snapshot().Motion)
 	var lastTelemetryTime time.Time
 
 	// --- Serial port ---
@@ -86,6 +102,10 @@ func main() {
 				Kp:     kp, Ki: ki, Kd: kd,
 			})
 		})
+		initial := profile.Snapshot()
+		if err := serialPort_.SetStartupProfile(initial.Motors, initial.Timing); err != nil {
+			log.Fatal(err)
+		}
 		serialPort_.Start()
 	}
 
@@ -152,12 +172,31 @@ func main() {
 		}()
 	}
 
+	// Save only requested, successfully applied values, not stale serial readback.
+	persist := func(change func(*settings.Config)) error {
+		if err := profile.Update(change); err != nil {
+			return fmt.Errorf("change applied, but %w", err)
+		}
+		next := profile.Snapshot()
+		if serialPort_ != nil {
+			return serialPort_.SetStartupProfile(next.Motors, next.Timing)
+		}
+		return nil
+	}
 	// --- Step test runner ---
 	setPID := func(joint int, kp, ki, kd float32) error {
 		if serialPort_ == nil {
 			return fmt.Errorf("serial disabled")
 		}
-		return serialPort_.SetMotorPID(joint, kp, ki, kd)
+		if err := serialPort_.SetMotorPID(joint, kp, ki, kd); err != nil {
+			return err
+		}
+		return persist(func(c *settings.Config) {
+			m := &c.Motors[joint-1]
+			m.Kp = float32(math.Round(float64(kp)*100) / 100)
+			m.Ki = float32(math.Round(float64(ki)*100) / 100)
+			m.Kd = float32(math.Round(float64(kd)*100) / 100)
+		})
 	}
 	setTarget := func(joint int, value float32) error {
 		mu.Lock()
@@ -203,6 +242,67 @@ func main() {
 
 	// --- API Deps ---
 	deps := &api.Deps{
+		SetMotorFilters: func(s serial.MotorFilters) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if armed || stepRunner.IsRunning() {
+				return fmt.Errorf("pause before changing motor filters")
+			}
+			if serialPort_ == nil {
+				return fmt.Errorf("serial disabled")
+			}
+			if err := serialPort_.SetMotorFilters(s); err != nil {
+				return err
+			}
+			return persist(func(c *settings.Config) {
+				c.Motors[s.Joint-1].LPFHz = float32(math.Round(float64(s.LPFHz)*10) / 10)
+				c.Motors[s.Joint-1].HPFHz = float32(math.Round(float64(s.HPFHz)*10) / 10)
+			})
+		},
+		SoloMotor: func(j int) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if estopTripped || stepRunner.IsRunning() {
+				return fmt.Errorf("clear the pause latch and finish the test first")
+			}
+			if serialPort_ == nil {
+				return fmt.Errorf("serial disabled")
+			}
+			armed = false
+			manualMode = true
+			if err := serialPort_.EnableOnly(j); err != nil {
+				return err
+			}
+			armed = true
+			return nil
+		},
+		SettingsInfo: func() interface{} { return map[string]interface{}{"path": profile.Path(), "auto_save": true} },
+		TuneController: func(s serial.ControllerTuning) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if armed || stepRunner.IsRunning() {
+				return fmt.Errorf("pause before tuning controller timing")
+			}
+			if serialPort_ == nil {
+				return fmt.Errorf("serial disabled")
+			}
+			if err := serialPort_.TuneController(s); err != nil {
+				return err
+			}
+			return persist(func(c *settings.Config) { c.Motors[s.Joint-1].Ks = s.Ks; c.Timing = s })
+		},
+		RunSignal: func(j int, mode string, amplitude, period float32) error {
+			if !*noUDP {
+				return fmt.Errorf("restart with --no-udp for bench signals")
+			}
+			if serialPort_ == nil {
+				return fmt.Errorf("serial disabled")
+			}
+			if err := serialPort_.StepReady(j); err != nil {
+				return err
+			}
+			return stepRunner.RunSignal(j, mode, amplitude, period)
+		},
 		GetSessionSamples: func(n int) interface{} { return store.Last(n) },
 		ExportSessionCSV:  func(w http.ResponseWriter) { store.ExportCSV(w) },
 		GetPID: func() (float32, float32, float32) {
@@ -212,6 +312,8 @@ func main() {
 			return serialPort_.PID()
 		},
 		SetPID: func(j int, kp, ki, kd float32) error {
+			mu.Lock()
+			defer mu.Unlock()
 			if stepRunner.IsRunning() {
 				return fmt.Errorf("test running")
 			}
@@ -219,7 +321,7 @@ func main() {
 		},
 		GetMotors: func() interface{} {
 			if serialPort_ == nil {
-				return [3]serial.MotorSettings{}
+				return profile.Snapshot().Motors
 			}
 			return serialPort_.Motors()
 		},
@@ -235,16 +337,30 @@ func main() {
 			if err := serialPort_.Configure(j, s); err != nil {
 				return err
 			}
-			cfg := engine.GetConfig()
+			runtimeMotion := engine.GetConfig()
 			switch j {
 			case 1:
-				cfg.PitchNeutral = s.Center
+				runtimeMotion.PitchNeutral = s.Center
 			case 2:
-				cfg.RollNeutral = s.Center
+				runtimeMotion.RollNeutral = s.Center
 			case 3:
-				cfg.HeaveNeutral = s.Center
+				runtimeMotion.HeaveNeutral = s.Center
 			}
-			engine.SetConfig(cfg)
+			engine.SetConfig(runtimeMotion)
+			if err := persist(func(c *settings.Config) {
+				// Configure sends gains and bounds, but Ks is controlled separately.
+				ks := c.Motors[j-1].Ks
+				lpf, hpf := c.Motors[j-1].LPFHz, c.Motors[j-1].HPFHz
+				c.Motors[j-1] = s
+				c.Motors[j-1].Ks = ks
+				c.Motors[j-1].LPFHz, c.Motors[j-1].HPFHz = lpf, hpf
+				c.Motors[j-1].Kp = float32(math.Round(float64(s.Kp)*100) / 100)
+				c.Motors[j-1].Ki = float32(math.Round(float64(s.Ki)*100) / 100)
+				c.Motors[j-1].Kd = float32(math.Round(float64(s.Kd)*100) / 100)
+			}); err != nil {
+				return err
+			}
+			engine.SetConfig(profile.Snapshot().Motion)
 			return nil
 		},
 		EnableMotor: func(j int) error {
@@ -324,21 +440,8 @@ func main() {
 				if stepRunner.IsRunning() {
 					return fmt.Errorf("wait for test to finish")
 				}
-				active := false
-				for _, s := range serialPort_.Motors() {
-					if s.Active {
-						active = true
-					}
-				}
-				if !active {
-					return fmt.Errorf("configure and include at least one motor")
-				}
-				for i, s := range serialPort_.Motors() {
-					if s.Active {
-						if err := serialPort_.Enable(i + 1); err != nil {
-							return err
-						}
-					}
+				if err := serialPort_.EnableIncluded(); err != nil {
+					return err
 				}
 			}
 			armed = state
@@ -371,6 +474,9 @@ func main() {
 			armed = false
 			estopCode = 0
 			estopReason = "Host motion paused"
+			if serialPort_ != nil {
+				serialPort_.ClearMotionFault()
+			}
 			return nil
 		},
 		RunStepTest: func(joint int, kp, ki, kd, stepSize float32) error {
@@ -400,7 +506,10 @@ func main() {
 			if err := cfg.Validate(); err != nil {
 				return err
 			}
-			engine.SetConfig(cfg)
+			if err := profile.Update(func(c *settings.Config) { c.Motion = cfg }); err != nil {
+				return err
+			}
+			engine.SetConfig(profile.Snapshot().Motion)
 			return nil
 		},
 		ControllerStats: func() (interface{}, error) {
@@ -438,6 +547,12 @@ func main() {
 			if serialPort_ != nil {
 				if !serialPort_.IsConnected() {
 					armed = false
+				}
+				if fault := serialPort_.MotionFault(); fault != "" {
+					armed = false
+					estopTripped = true
+					estopReason = fault
+					stepRunner.Cancel()
 				}
 				kp, ki, kd := serialPort_.PID()
 				currentPID = struct{ Kp, Ki, Kd float32 }{kp, ki, kd}

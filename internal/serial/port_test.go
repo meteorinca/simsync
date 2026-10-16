@@ -25,6 +25,7 @@ func (p *capturePort) Write(b []byte) (int, error) {
 func connected(p *Port, c *capturePort) {
 	p.port = c
 	p.ready = true
+	p.autoConfigured = true
 	p.lastReply = time.Now()
 	for i := range p.settings {
 		p.settings[i] = MotorSettings{Configured: true, Active: true, Min: 0, Max: 1023, Center: 512}

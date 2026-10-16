@@ -87,3 +87,50 @@ func TestConfigureAndEnable(t *testing.T) {
 		t.Fatal("invalid configuration accepted")
 	}
 }
+
+func TestEnableM2Only(t *testing.T) {
+	p := New("", 0, nil)
+	c := &capturePort{}
+	connected(p, c)
+	p.settings[1] = BenchDefaults()
+	p.settings[1].Configured = true
+	p.seen[1] = time.Now()
+	p.joints[1] = JointTelemetry{Actual: 338, Target: 500}
+	p.disabled = 7
+	if err := p.Enable(2); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(c.data, append(frame('B', 338), []byte("[en2]")...)) {
+		t.Fatalf("M2 must hold its own feedback and enable only channel 2: %v", c.data)
+	}
+}
+
+func TestEnableIncludedPreflightsBothMotors(t *testing.T) {
+	p := New("", 0, nil)
+	c := &capturePort{}
+	connected(p, c)
+	p.settings[2].Active = false
+	p.joints[0].Actual, p.joints[1].Actual = 512, 508
+	p.seen[1] = time.Now().Add(-time.Second)
+	if p.EnableIncluded() == nil || len(c.data) != 0 {
+		t.Fatal("must reject stale M2 before powering M1")
+	}
+	p.seen[1] = time.Now()
+	if err := p.EnableIncluded(); err != nil {
+		t.Fatal(err)
+	}
+	want := append(frame('A', 512), []byte("[en1]")...)
+	want = append(want, frame('B', 508)...)
+	want = append(want, []byte("[en2]")...)
+	if !bytes.Equal(c.data, want) {
+		t.Fatal("must enable both included motors at their own feedback", c.data)
+	}
+	c.data = nil
+	p.parseFrame(frame('q', 3))
+	if err := p.EnableIncluded(); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(c.data, frame('h', 3)) {
+		t.Fatal("new firmware must hold and enable M1/M2 atomically", c.data)
+	}
+}

@@ -78,6 +78,7 @@
   var lastFrameAt = 0;
   var testBusy = false;
   var jogPending = false;
+  var lastResults = [];
 
   /* ---- WebSocket ---- */
   function connect() {
@@ -176,6 +177,9 @@
       var e = jEls[i];
       if (!e) return;
       setText(e.actual, Angles.format(i+1, j.actual));
+      e.actual.title = j.actual + ' counts';
+      e.target.title = j.target + ' counts';
+      e.err.title = j.error + ' counts';
       setText(e.target, 'TGT ' + Angles.format(i+1, j.target));
       setText(e.err,    'ERR ' + Angles.format(i+1, j.error, true));
       setDutyBar(e.fwd, e.rev, j.duty || 0);
@@ -229,18 +233,19 @@
   }
 
   function setSliderAndNum(slider, num, val) {
-    if (slider) { slider.min = 0; slider.max = Math.max(30, val); }
+    if (slider) { slider.min = 0; slider.max = Math.max(Number(slider.dataset.baseMax || slider.max), val); }
     if (num) { num.min = 0; num.max = 327.67; num.step = 0.01; }
     if (slider) slider.value = val;
     if (num)    num.value = parseFloat(val).toFixed(2);
   }
 
   function setupPIDSync(slider, num) {
+    if (slider) slider.dataset.baseMax = slider.max;
     if (slider) slider.addEventListener('input', function () {
       if (num) num.value = parseFloat(slider.value).toFixed(2);
     });
     if (num) num.addEventListener('change', function () {
-      if (slider) slider.value = num.value;
+      if (slider) { slider.max = Math.max(Number(slider.dataset.baseMax || slider.max), Number(num.value)); slider.value = num.value; }
     });
   }
   setupPIDSync(els.kpSlider, els.kpNum);
@@ -281,14 +286,14 @@
   /* ---- Direct position commands ---- */
   if (els.manGoBtn) els.manGoBtn.addEventListener('click', function () {
     var j = parseInt(els.manJoint.value, 10) || 1;
-    var a = Angles.count(j, parseFloat(els.manAngle.value));
+    var a = parseFloat(els.manAngle.value);
     apiGet('/api/target?joint=' + j + '&angle=' + a.toFixed(1));
   });
 
   function jogJoint(delta) {
     var j = latestFrame && latestFrame.joints ? latestFrame.joints[currentJoint - 1] : null;
-    var base = j && Number.isFinite(j.target) ? j.target : 512;
-    apiGet('/api/target?joint=' + currentJoint + '&angle=' + (base + Angles.count(currentJoint, delta, true)).toFixed(1));
+    var base = j && Number.isFinite(j.target) ? j.target : 338;
+    apiGet('/api/target?joint=' + currentJoint + '&angle=' + (base + delta).toFixed(1));
   }
 
   if (els.stepPlus5)  els.stepPlus5.addEventListener('click',  function () { jogJoint(+5); });
@@ -303,7 +308,7 @@
   /* ---- Step Test ---- */
   if (els.stepTestBtn) els.stepTestBtn.addEventListener('click', function () {
     var j    = parseInt(els.stepJoint.value, 10) || 1;
-    var step = Angles.count(j, parseFloat(els.stepSize.value), true);
+    var step = parseFloat(els.stepSize.value);
     var kp   = parseFloat(els.kpNum.value);
     var ki   = parseFloat(els.kiNum.value);
     var kd   = parseFloat(els.kdNum.value);
@@ -323,6 +328,7 @@
   }, 2000);
 
   function renderResults(results) {
+    lastResults = results || [];
     if (!els.resultsBody || !results || !results.length) return;
 
     var bestIdx = -1;
@@ -400,6 +406,7 @@
       var trace = btn.dataset.trace;
       if (window.Scope) Scope.toggleTrace(trace);
       btn.classList.toggle('active');
+      btn.setAttribute('aria-pressed', btn.classList.contains('active'));
     });
   });
 
@@ -447,7 +454,7 @@
       headers: { 'Content-Type': 'application/json', 'X-SimSync': '1' },
       body: JSON.stringify(body),
     }).then(checkResponse).then(function (body) {
-      $('commandStatus').textContent = 'Applied'; $('commandStatus').style.color = 'var(--cyan)'; return body;
+      $('commandStatus').textContent = ['/api/pid','/api/motors','/api/motor/filters','/api/controller/tuning','/api/motion/config'].includes(path) ? 'Applied · saved for restart' : 'Applied'; $('commandStatus').style.color = 'var(--cyan)'; return body;
     }).catch(showError);
   }
 
@@ -455,7 +462,7 @@
   function loadMotor() {
     var m = motors[currentJoint - 1];
     if (!m || !m.ready) return;
-    var values = m.configured ? m : {kp: 1, ki: 0, kd: 0.4, min: 50, max: 650, center: 512, pwm_min: 0, pwm_max: 100, pwm_rev: 50, cutoff: 23, clip: 40, deadzone: 0, active: true};
+    var values = m.configured ? m : {kp: 20, ki: 0, kd: 0.4, min: 50, max: 650, center: 338, pwm_min: 0, pwm_max: 100, pwm_rev: 50, cutoff: 23, clip: 40, deadzone: 0, active: true};
     syncPIDFromFrame({pid: values});
     Object.keys(fields).forEach(function (k) { $(fields[k]).value = values[k]; });
     $('motorActive').checked = values.active;
@@ -490,7 +497,7 @@
     }
     apiPost('/api/motors', null, { joint: currentJoint, settings: s });
   });
-  $('motorEnable').addEventListener('click', function () { apiGet('/api/motor/enable?joint=' + currentJoint); });
+  $('motorEnable').addEventListener('click', function () { apiGet('/api/motor/solo?joint=' + currentJoint); });
   $('diagnosticsToggle').addEventListener('change', function () {
     apiPost('/api/diagnostics', null, {enabled: this.checked});
   });
@@ -508,16 +515,20 @@
     var live = latestFrame && latestFrame.serial_ok && Date.now() - lastFrameAt < 1000;
     var m = motors[currentJoint - 1];
     var jogging = motors.some(function (s) { return s.jogging; });
+    motors.forEach(function (motor,index) {
+      $('j'+(index+1)+'State').textContent=!live || !motor.ready?'Waiting for controller':!motor.active?'Not included':motor.disabled?'Disabled':'Enabled';
+    });
     var canJog = live && m && m.ready && m.diagnostics && m.jog_supported && m.configured && m.active && !testBusy && !jogging && !jogPending && !latestFrame.estop;
     $('diagnosticsToggle').checked = !!(m && m.diagnostics);
     $('diagnosticsToggle').disabled = !live || !m || !m.jog_supported;
     $('jogMinus').disabled = !canJog; $('jogPlus').disabled = !canJog;
     $('jogStop').disabled = !live || !m || !m.jog_supported;
     $('jogStatus').textContent = !m || !m.ready ? 'Waiting for controller' : !m.jog_supported ? 'Firmware update required' : jogging ? 'Pulse running' : 'Ready | PWM cap ' + m.pwm_max + '/255';
-    var move = live && m && m.ready && m.configured && m.active && !m.disabled && latestFrame.armed && !testBusy;
+    var solo = motors.some(function (motor) { return motor.solo; });
+    var move = live && m && m.ready && m.configured && m.active && !m.disabled && latestFrame.armed && !testBusy && (!solo || m.solo);
     [els.manGoBtn, els.centerBtn, els.stepMinus5, els.stepPlus5, els.stepMinus10, els.stepPlus10, els.stepTestBtn].forEach(function (b) { b.disabled = !move; });
     $('limitsApply').disabled = !live || !m || !m.ready || latestFrame.armed || testBusy || jogging;
-    $('motorEnable').disabled = !live || !m || m.diagnostics || !m.configured || !m.active || !m.disabled || latestFrame.armed || latestFrame.estop || testBusy || jogging;
+    $('motorEnable').disabled = !live || !m || !m.ready || !m.jog_supported || m.diagnostics || !m.configured || !m.active || latestFrame.estop || testBusy || jogging;
     els.pidSendBtn.disabled = !live || !m || !m.ready || testBusy || jogging;
     els.pidSaveBtn.disabled = !live || latestFrame.armed || testBusy || jogging;
     if (!live) { setPill(els.pillSerial, false, 'SERIAL', 'DISC'); loadedJoint = 0; }
@@ -527,9 +538,10 @@
     updateControls();
     if (pollBusy) return;
     pollBusy = true;
-    Promise.all([request('/api/motors').then(checkResponse), request('/api/steptest/status').then(checkResponse)]).then(function (data) {
+    Promise.all([request('/api/motors').then(checkResponse), request('/api/steptest/status').then(checkResponse), request('/api/settings').then(checkResponse)]).then(function (data) {
       var previousMotor = motors[currentJoint - 1];
       motors = data[0]; testBusy = data[1].running;
+      if(data[2] && data[2].path) { $('settingsFile').textContent='Auto-save · '+data[2].path; }
       if (previousMotor && !previousMotor.configured && motors[currentJoint - 1].configured) loadedJoint = 0;
       els.testRunning.style.display = testBusy ? 'inline-block' : 'none';
       var m = motors[currentJoint - 1];
@@ -543,31 +555,48 @@
     }).catch(function () {}).finally(function () { pollBusy = false; });
   }, 500);
 
-  function refreshAngles() {
-    var c=Angles.get(currentJoint), unit=Angles.unit(currentJoint);
-    $('angleZero').value=c ? c.zero : 512;
-    $('angleSpan').value=c ? c.span : '';
-    $('angleStatus').textContent=c ? 'M'+currentJoint+' · calibrated · saved in this browser' : 'M'+currentJoint+' · uncalibrated · ADC counts';
-    $('positionUnit').textContent=unit;
-    $('stepUnit').textContent=unit;
-    [-10,-5,5,10].forEach(function (n) { $('step'+(n<0?'Minus':'Plus')+Math.abs(n)).textContent=(n>0?'+':'')+n+unit; });
-    els.manAngle.min=Angles.value(currentJoint,0);
-    els.manAngle.max=Angles.value(currentJoint,1023);
-    els.manAngle.step=c ? '0.1' : '1';
-    var j=latestFrame && latestFrame.joints[currentJoint-1];
-    els.manAngle.value=Angles.value(currentJoint,j ? j.target : 512).toFixed(1);
-    els.stepSize.min=-Angles.value(currentJoint,40,true);
-    els.stepSize.max=Angles.value(currentJoint,40,true);
-    els.stepSize.step='any';
-    els.stepSize.value=Angles.value(currentJoint,8,true).toFixed(2);
-    if(latestFrame) updateJoints(latestFrame);
+  function refreshDisplay() {
+    $('displayUnit').value=Angles.mode();
+    if(latestFrame) {
+      updateJoints(latestFrame);
+      var feedback=latestFrame.joints[currentJoint-1];
+      if(feedback) $('jogFeedback').textContent='M'+currentJoint+' | PWM '+feedback.duty+'/255 | Actual '+Angles.format(currentJoint,feedback.actual);
+    }
+    renderResults(lastResults);
   }
+  function refreshAngles() {
+    var c=Angles.get(currentJoint);
+    $('angleMinCount').value=c.min;
+    $('angleMaxCount').value=c.max;
+    $('angleMinDegrees').value=c.angleMin;
+    $('angleMaxDegrees').value=c.angleMax;
+    $('angleStatus').textContent='M'+currentJoint+' · '+c.min+'–'+c.max+' counts → approximately '+c.angleMin+'–'+c.angleMax+'° · saved in this browser';
+    refreshDisplay();
+  }
+  $('displayUnit').addEventListener('change',function () {
+    Angles.setMode(this.value);
+    refreshDisplay();
+  });
   $('angleApply').addEventListener('click',function () {
     try {
-      if ($('angleZero').value==='' || $('angleSpan').value==='') throw new Error('Enter both angle calibration values.');
-      Angles.set(currentJoint,Number($('angleZero').value),Number($('angleSpan').value));
+      var ids=['angleMinCount','angleMaxCount','angleMinDegrees','angleMaxDegrees'];
+      if(ids.some(function (id) {return $(id).value==='';})) throw new Error('Enter both count endpoints and both angle endpoints.');
+      Angles.set(currentJoint,Number($('angleMinCount').value),Number($('angleMaxCount').value),Number($('angleMinDegrees').value),Number($('angleMaxDegrees').value));
       refreshAngles();
-    } catch(e) { showError(e); }
+      $('commandStatus').textContent='Display range updated · motor commands remain in counts';
+    } catch(e) {showError(e);}
+  });
+  $('angleReset').addEventListener('click',function () {Angles.reset(currentJoint);refreshAngles();});
+  window.SimSync = {
+    state: function () { return {frame:latestFrame, motors:motors, joint:currentJoint, testBusy:testBusy, fresh:Date.now()-lastFrameAt<1000}; },
+    post: function (path,body) { return apiPost(path,null,body); },
+    selectMotor: selectMotor,
+    results: function () { return lastResults; },
+    error: showError
+  };
+  $('stablePreset').addEventListener('click',function () {
+    syncPIDFromFrame({pid:{kp:20,ki:0,kd:0.4}});
+    $('commandStatus').textContent='P 20 / I 0 / D 0.4 loaded · Apply Gains to send';
   });
   refreshAngles();
   connect();

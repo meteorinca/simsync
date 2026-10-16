@@ -19,34 +19,56 @@ type JointTelemetry struct {
 }
 type TelemetryHandler func(JointTelemetry)
 type Port struct {
-	mu             sync.Mutex
-	portName       string
-	baud           int
-	port           goserial.Port
-	handler        TelemetryHandler
-	stopCh         chan struct{}
-	once           sync.Once
-	ready          bool
-	lastReply      time.Time
-	joints         [3]JointTelemetry
-	seen           [3]time.Time
-	gains          [3]float32
-	disabled       byte
-	settings       [3]MotorSettings
-	settingsSeen   [3]time.Time
-	settingsMask   [3]byte
-	autoConfigured bool
-	jogSupported   bool
-	jogUntil       time.Time
-	jogMotor       int
-	diagnostics    bool
+	mu                  sync.Mutex
+	portName            string
+	baud                int
+	port                goserial.Port
+	handler             TelemetryHandler
+	stopCh              chan struct{}
+	once                sync.Once
+	ready               bool
+	lastReply           time.Time
+	joints              [3]JointTelemetry
+	seen                [3]time.Time
+	gains               [3]float32
+	disabled            byte
+	divider             int
+	pwm12, pwm3         int
+	tuningSeen          time.Time
+	ksSeen              [3]time.Time
+	settings            [3]MotorSettings
+	settingsSeen        [3]time.Time
+	settingsMask        [3]byte
+	autoConfigured      bool
+	startup             [3]MotorSettings
+	startupTiming       ControllerTuning
+	startupApplied      [3]bool
+	startupStopped      bool
+	startupTimerApplied bool
+	jogSupported        bool
+	holdSupported       bool
+	filtersSupported    bool
+	filterSeen          [3]time.Time
+	filterMask          [3]byte
+	soloMotor           int
+	guardMask           byte
+	tracking            [3]trackingGuard
+	motionFault         string
+	jogUntil            time.Time
+	jogMotor            int
+	diagnostics         bool
 }
 
 func New(name string, baud int, handler TelemetryHandler) *Port {
 	if baud == 0 {
 		baud = 500000
 	}
-	return &Port{portName: name, baud: baud, handler: handler, stopCh: make(chan struct{})}
+	p := &Port{portName: name, baud: baud, handler: handler, stopCh: make(chan struct{}), startupTiming: ControllerTuning{Joint: 1, Ks: 1, Divider: 1, PWM12: 25, PWM3: 31}}
+	for i := range p.startup {
+		p.startup[i] = BenchDefaults()
+		p.startup[i].Active = i < 2
+	}
+	return p
 }
 func (p *Port) Start() { go p.loop() }
 func (p *Port) Stop() {
@@ -151,6 +173,9 @@ func (p *Port) PID() (float32, float32, float32) {
 func (p *Port) SavePID() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !p.autoConfigured {
+		return fmt.Errorf("waiting for saved settings to restore")
+	}
 	if p.jogActiveLocked() {
 		return fmt.Errorf("open-loop jog running")
 	}
@@ -176,7 +201,7 @@ func (p *Port) Stats() (interface{}, error) {
 	if !p.ready || time.Since(p.lastReply) > time.Second {
 		return nil, fmt.Errorf("SMC3 disconnected")
 	}
-	return map[string]interface{}{"controller": "SMC3 Uno", "baud": p.baud, "disabled_mask": p.disabled, "units": "ADC counts"}, nil
+	return map[string]interface{}{"controller": "SMC3 Uno", "baud": p.baud, "disabled_mask": p.disabled, "units": "ADC counts", "firmware": "0.70", "port": p.portName, "pid_divider": p.divider, "pwm_12_khz": p.pwm12, "pwm_3_khz": p.pwm3, "timing_ready": time.Since(p.tuningSeen) < 2*time.Second}, nil
 }
 func (p *Port) retry() bool {
 	select {
@@ -227,8 +252,20 @@ func (p *Port) loop() {
 		p.ready = false
 		p.seen = [3]time.Time{}
 		p.settingsMask = [3]byte{}
+		p.tuningSeen = time.Time{}
+		p.ksSeen = [3]time.Time{}
 		p.autoConfigured = false
+		p.startupApplied = [3]bool{}
+		p.startupStopped = false
+		p.startupTimerApplied = false
 		p.jogSupported = false
+		p.holdSupported = false
+		p.filtersSupported = false
+		p.filterMask = [3]byte{}
+		p.filterSeen = [3]time.Time{}
+		p.soloMotor = 0
+		p.guardMask = 0
+		p.tracking = [3]trackingGuard{}
 		p.diagnostics = false
 		p.jogUntil = time.Time{}
 		for i := range p.settings {
@@ -252,7 +289,8 @@ func (p *Port) readLoop(sp goserial.Port) {
 	var pending []byte
 	buf := make([]byte, 256)
 	lastPoll := time.Time{}
-	settingsQueries := []string{"[ver]", "[cap]", "[rdD]", "[rdE]", "[rdF]", "[rdG]", "[rdH]", "[rdI]", "[rdJ]", "[rdK]", "[rdL]", "[rdP]", "[rdQ]", "[rdR]", "[rdS]", "[rdT]", "[rdU]", "[rdV]", "[rdW]", "[rdX]"}
+	settingsQueries := []string{"[ver]", "[cap]", "[rdD]", "[rdE]", "[rdF]", "[rdG]", "[rdH]", "[rdI]", "[rdJ]", "[rdK]", "[rdL]", "[rdP]", "[rdQ]", "[rdR]", "[rdS]", "[rdT]", "[rdU]", "[rdV]", "[rdW]", "[rdX]", "[rdM]", "[rdN]", "[rdO]", "[rd~]"}
+	settingsQueries = append(settingsQueries, "[rd!]", "[rd\"]", "[rd#]", "[rd$]", "[rd%]", "[rd&]")
 	settingsCursor := 0
 	started := time.Now()
 	for {
@@ -289,7 +327,7 @@ func (p *Port) readLoop(sp goserial.Port) {
 			p.parseFrame(pending[:5])
 			pending = pending[5:]
 		}
-		p.autoConfigureBench()
+		p.restoreStartupSettings()
 		p.mu.Lock()
 		stale := time.Since(p.lastReply) > time.Second
 		p.mu.Unlock()
@@ -299,28 +337,87 @@ func (p *Port) readLoop(sp goserial.Port) {
 	}
 }
 
-// autoConfigureBench makes the first controller channel immediately usable for
-// an unmounted bench rig. The startup profile replaces legacy EEPROM settings
-// in RAM once per connection, with Ki zero and the requested 50-650 bounds.
-func (p *Port) autoConfigureBench() {
+// SetStartupProfile changes what will be restored on the next connection.
+// It never sends motor targets or enables output.
+func (p *Port) SetStartupProfile(motors [3]MotorSettings, timing ControllerTuning) error {
+	for _, s := range motors {
+		if err := s.Validate(); err != nil {
+			return err
+		}
+		if s.Ks < 1 || s.Ks > 100 {
+			return fmt.Errorf("Ks must be 1-100")
+		}
+	}
+	timing.Joint = 1
+	timing.Ks = motors[0].Ks
+	if err := timing.Validate(); err != nil {
+		return err
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.autoConfigured || !p.ready || p.settingsMask[0] != 63 || time.Since(p.settingsSeen[0]) > 2*time.Second || time.Since(p.seen[0]) > 250*time.Millisecond {
+	p.startup = motors
+	p.startupTiming = timing
+	return nil
+}
+
+// Restore one motor per pass so writes stay below the Uno receive buffer.
+// No targets, enable commands or EEPROM writes are sent during restoration.
+func (p *Port) restoreStartupSettings() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.autoConfigured || !p.ready {
 		return
 	}
-	s := BenchDefaults()
-	if err := s.Validate(); err != nil {
+	if !p.startupStopped {
+		if p.jogSupported {
+			if err := p.writeLocked([]byte("[stp]")); err != nil {
+				return
+			}
+		}
+		p.startupStopped = true
 		return
 	}
-	data := pidFrames(1, s.Kp, s.Ki, s.Kd)
-	data = append(data, frame('P', uint16(s.PWMMin<<8|s.PWMMax))...)
-	data = append(data, frame('S', uint16(s.Cutoff<<8|s.Clip))...)
-	data = append(data, frame('V', uint16(s.Deadzone<<8|s.PWMRev))...)
-	if err := p.writeLocked(data); err != nil {
+	for i, s := range p.startup {
+		if p.startupApplied[i] {
+			continue
+		}
+		if p.settingsMask[i] != 63 || time.Since(p.settingsSeen[i]) > 2*time.Second {
+			return
+		}
+		data := pidFrames(i+1, s.Kp, s.Ki, s.Kd)
+		data = append(data, frame(byte('P'+i), uint16(s.PWMMin<<8|s.PWMMax))...)
+		data = append(data, frame(byte('S'+i), uint16(s.Cutoff<<8|s.Clip))...)
+		data = append(data, frame(byte('V'+i), uint16(s.Deadzone<<8|s.PWMRev))...)
+		data = append(data, frame(byte('M'+i), uint16(s.Ks))...)
+		if !p.filtersSupported && (s.LPFHz != 0 || s.HPFHz != 0) {
+			return
+		}
+		if p.filtersSupported {
+			data = append(data, filterFrames(i+1, s.LPFHz, s.HPFHz)...)
+		}
+		if err := p.writeLocked(data); err != nil {
+			return
+		}
+		// Preserve controller readback separately; reload it after the write.
+		p.settings[i].Min, p.settings[i].Max, p.settings[i].Center = s.Min, s.Max, s.Center
+		p.settings[i].Active, p.settings[i].Configured = s.Active, true
+		p.settingsMask[i] = 0
+		p.settingsSeen[i] = time.Time{}
+		p.ksSeen[i] = time.Time{}
+		p.filterMask[i] = 0
+		p.filterSeen[i] = time.Time{}
+		p.startupApplied[i] = true
 		return
 	}
-	p.settings[0] = s
-	p.settings[0].Configured = true
+	if !p.startupTimerApplied {
+		t := p.startupTiming
+		data := append(frame('Z', uint16(t.Divider<<8)), frame('~', uint16(t.PWM12<<8|t.PWM3))...)
+		if err := p.writeLocked(data); err != nil {
+			return
+		}
+		p.tuningSeen = time.Time{}
+		p.startupTimerApplied = true
+	}
 	p.autoConfigured = true
 }
 func (p *Port) parseFrame(f []byte) {
@@ -328,6 +425,28 @@ func (p *Port) parseFrame(f []byte) {
 	id := f[1]
 	if id == 'q' {
 		p.jogSupported = binary.BigEndian.Uint16(f[2:4])&1 != 0
+		p.holdSupported = binary.BigEndian.Uint16(f[2:4])&2 != 0
+		p.filtersSupported = binary.BigEndian.Uint16(f[2:4])&4 != 0
+	}
+	if id >= '!' && id <= '&' {
+		i, kind := int(id-'!')%3, int(id-'!')/3
+		hz := float32(binary.BigEndian.Uint16(f[2:4])) / 10
+		if kind == 0 {
+			p.settings[i].LPFHz = hz
+		} else {
+			p.settings[i].HPFHz = hz
+		}
+		p.filterMask[i] |= 1 << uint(kind)
+		p.filterSeen[i] = time.Now()
+	}
+	if id >= 'M' && id <= 'O' {
+		i := int(id - 'M')
+		p.settings[i].Ks = int(binary.BigEndian.Uint16(f[2:4]))
+		p.ksSeen[i] = time.Now()
+	}
+	if id == '~' {
+		p.pwm12, p.pwm3 = int(f[2]), int(f[3])
+		p.tuningSeen = time.Now()
 	}
 	if id >= 'D' && id <= 'L' {
 		i, g := int(id-'D')%3, int(id-'D')/3
@@ -380,11 +499,13 @@ func (p *Port) parseFrame(f []byte) {
 		jt.Error = jt.Target - jt.Actual
 		p.joints[i] = jt
 		p.seen[i] = time.Now()
+		p.guardTrackingLocked(i, jt)
 		emit = true
 	} else if id >= 'a' && id <= 'c' {
 		i := int(id - 'a')
 		p.joints[i].Duty = int16(f[3])
 		p.disabled = f[2] & 7
+		p.divider = int(f[2] >> 4)
 	} else {
 		for i, c := range []byte{'D', 'G', 'J'} {
 			if id == c {

@@ -78,9 +78,15 @@ __asm volatile ("nop");
 #include <SoftwareSerial.h>
 #include "JogPulse.h"
 #include "MotorDrive.h"
+#include "PIDFilters.h"
+PIDFilters Filters[3];
+float PIDFilterDt = 0.00025f;
 
 // SimSync extension. Existing SMC3 commands and EEPROM layout are unchanged.
-// [cap] -> [q,0,flags]: bit 0 timed jog.
+// [cap] -> [q,0,flags]: bit 0 timed jog, bit 1 exact hold, bit 2 motor filters.
+// [! / " / #, Hz*10] feedback LPF M1/M2/M3; [$ / % / &, Hz*10] D-branch HPF.
+// Cutoffs are RAM-only; SimSync restores them from its saved profile.
+// [h,0,motor mask] samples feedback and enables the selected channels together.
 // [stp] disables every motor.
 // [j/k/l, signed PWM byte, duration/10] starts M1/M2/M3; PWM=0 stops.
 // [4/5/6, minimum high, minimum low], [7/8/9, maximum high, maximum low].
@@ -89,6 +95,7 @@ JogPulse Jog[3];
 void EndJog(byte motor);
 bool ServiceJog(byte motor, int feedback);
 void StartJog(byte motor, int drive, unsigned int duration);
+void HoldMotors(byte mask);
 
 // defines for setting and clearing register bits
 #ifndef cbi
@@ -764,9 +771,26 @@ void ParseCommand(int ComPort)
             break;
         case 'c':
             if (RxBuffer[1][ComPort]=='a' && RxBuffer[2][ComPort]=='p') {
-                SendValue('q',1,ComPort);
+                SendValue('q',7,ComPort);
             }
             break;
+        case 'h':
+            if (RxBuffer[1][ComPort]==0) HoldMotors(RxBuffer[2][ComPort]);
+            break;
+        case '!': case '"': case '#': {
+            byte motor=RxBuffer[0][ComPort]-'!';
+            unsigned int hz=RxBuffer[1][ComPort]*256+RxBuffer[2][ComPort];
+            bool disabled=motor==0 ? Disable1 : motor==1 ? Disable2 : Disable3;
+            if (disabled && !Jog[motor].running && hz<=2000) Filters[motor].setLPF(hz);
+            break;
+        }
+        case '$': case '%': case '&': {
+            byte motor=RxBuffer[0][ComPort]-'$';
+            unsigned int hz=RxBuffer[1][ComPort]*256+RxBuffer[2][ComPort];
+            bool disabled=motor==0 ? Disable1 : motor==1 ? Disable2 : Disable3;
+            if (disabled && !Jog[motor].running && hz<=500) Filters[motor].setHPF(hz);
+            break;
+        }
         case '4': case '5': case '6':
             if (!Jog[RxBuffer[0][ComPort]-'4'].running)
                 Jog[RxBuffer[0][ComPort]-'4'].minimum = (RxBuffer[1][ComPort]*256)+RxBuffer[2][ComPort];
@@ -783,6 +807,12 @@ void ParseCommand(int ComPort)
             {
                 switch (RxBuffer[2][ComPort]) 
                 {
+                    case '!': case '"': case '#':
+                        SendValue(RxBuffer[2][ComPort],Filters[RxBuffer[2][ComPort]-'!'].lpfTenths,ComPort);
+                        break;
+                    case '$': case '%': case '&':
+                        SendValue(RxBuffer[2][ComPort],Filters[RxBuffer[2][ComPort]-'$'].hpfTenths,ComPort);
+                        break;
                     case 'A':
 #ifdef REVERSE_MOTOR1
                         SendTwoValues('A',(1023-Feedback1)/4,(1023-Target1)/4,ComPort);
@@ -1306,6 +1336,14 @@ void DriveMode2(byte motor, int drive)
     byte b = motor==0 ? ENBpin1 : motor==1 ? ENBpin2 : ENBpin3;
     byte pin = motor==0 ? PWMpin1 : motor==1 ? PWMpin2 : PWMpin3;
     MotorDrive out = mode2Drive(constrain(drive,-255,255),false);
+    // Updating duty in the same direction does not need bridge blanking. The
+    // previous sequence pulsed enable off at every PID tick, adding an audible
+    // low-frequency switching component even with a high PWM carrier.
+    if (((OutputPort & (1 << a)) != 0) == out.high) {
+        WriteOutputPort();
+        if (motor==2) analogWrite(pin,out.duty); else MyPWMWrite(pin,out.duty);
+        return;
+    }
     // Disable the bridge while switching complementary inputs.
     bool enabled = (OutputPort & (1 << b)) != 0;
     OutputPort &= ~(1 << b);
@@ -1360,20 +1398,22 @@ void SetOutputsMotor3()
 
 
 
-int CalcMotor1PID(int TargetPosition, int CurrentPosition)   
+int CalcMotor1PID(int TargetPosition, int CurrentPosition)
 {
-    static int Error=0;                                                     
+    static float Error=0;
     static long pTerm_x100=0;
     static long dTerm_x100=0;
     static long iTerm_x100=0;
-    static int CumError=0;
-    static int LastPosition=0;
-    static int DeltaPosition=0;
+    static float CumError=0;
+    static float LastPosition=0;
+    static float DeltaPosition=0;
     static int KdFilterCount=0;
 
-    Error = TargetPosition - CurrentPosition;
+    static float derivativeDt=0;
+    float position=Filters[0].feedback(CurrentPosition,PIDFilterDt,Disable1);
+    Error = TargetPosition - position;
     if (Disable1) {
-        CumError=0; LastPosition=CurrentPosition; dTerm_x100=0; KdFilterCount=0;
+        CumError=0; LastPosition=position; dTerm_x100=0; KdFilterCount=0; derivativeDt=0;
         return 0;
     }
     if (abs(Error)<=DeadZone1)
@@ -1383,38 +1423,42 @@ int CalcMotor1PID(int TargetPosition, int CurrentPosition)
     else
     {
         CumError += Error;
-        CumError = constrain(CumError,-1024,1024);            
-    }         
+        CumError = constrain(CumError,-1024,1024);
+    }
 
-    pTerm_x100 = Kp1_x100 * (long)Error;                    // Error can only be between +/-1023 and Kp1_100 is constrained to 0-1000 so can work with type long
-    iTerm_x100 = (Ki1_x100 * (long)CumError);        // was >>6
+    pTerm_x100 = Kp1_x100 * Error;                    // Error can only be between +/-1023 and Kp1_100 is constrained to 0-1000 so can work with type long
+    iTerm_x100 = (Ki1_x100 * CumError);        // was >>6
 
     KdFilterCount++;
+    derivativeDt += PIDFilterDt;
     if (KdFilterCount >= Ks1)          // Apply a level of filtering to Kd parameter to help reduce motor noise
     {
-        DeltaPosition = (CurrentPosition - LastPosition);
-        LastPosition = CurrentPosition;
-        dTerm_x100 = (Kd1_x100 * (long)DeltaPosition);   // was <<5
-        KdFilterCount=0;    
+        DeltaPosition = (position - LastPosition);
+        LastPosition = position;
+        dTerm_x100 = (Kd1_x100 * Filters[0].derivative(DeltaPosition,derivativeDt));   // was <<5
+        KdFilterCount=0;
+        derivativeDt=0;
     }
-    
+
     return constrain((pTerm_x100 + iTerm_x100 - dTerm_x100) >> PowerScale ,-255,255);   //  the /128 (PowerScale) is an approximation to bring x100 terms back to units.  Accurate/consistent enough for this function.
 }
 
-int CalcMotor2PID(int TargetPosition, int CurrentPosition)   
+int CalcMotor2PID(int TargetPosition, int CurrentPosition)
 {
-    static int Error=0;                                                     
+    static float Error=0;
     static long pTerm_x100=0;
     static long dTerm_x100=0;
     static long iTerm_x100=0;
-    static int CumError=0;
-    static int LastPosition=0;
-    static int DeltaPosition=0;
+    static float CumError=0;
+    static float LastPosition=0;
+    static float DeltaPosition=0;
     static int KdFilterCount=0;
 
-    Error = TargetPosition - CurrentPosition;
+    static float derivativeDt=0;
+    float position=Filters[1].feedback(CurrentPosition,PIDFilterDt,Disable2);
+    Error = TargetPosition - position;
     if (Disable2) {
-        CumError=0; LastPosition=CurrentPosition; dTerm_x100=0; KdFilterCount=0;
+        CumError=0; LastPosition=position; dTerm_x100=0; KdFilterCount=0; derivativeDt=0;
         return 0;
     }
     if (abs(Error)<=DeadZone2)
@@ -1427,35 +1471,39 @@ int CalcMotor2PID(int TargetPosition, int CurrentPosition)
         CumError = constrain(CumError,-1024,1024);            // Maybe Try 512 as the limits??????
     }
 
-    pTerm_x100 = Kp2_x100 * (long)Error;                    // Error can only be between +/-1023 and Kp1_100 is constrained to 0-1000 so can work with type long
-    iTerm_x100 = (Ki2_x100 * (long)CumError);        
+    pTerm_x100 = Kp2_x100 * Error;                    // Error can only be between +/-1023 and Kp1_100 is constrained to 0-1000 so can work with type long
+    iTerm_x100 = (Ki2_x100 * CumError);
 
     KdFilterCount++;
+    derivativeDt += PIDFilterDt;
     if (KdFilterCount >= Ks2)      // Apply a level of filtering to Kd parameter to help reduce motor noise
     {
-        DeltaPosition = (CurrentPosition - LastPosition);
-        LastPosition = CurrentPosition;
-        dTerm_x100 = (Kd2_x100 * (long)DeltaPosition);    
-        KdFilterCount=0;    
+        DeltaPosition = (position - LastPosition);
+        LastPosition = position;
+        dTerm_x100 = (Kd2_x100 * Filters[1].derivative(DeltaPosition,derivativeDt));
+        KdFilterCount=0;
+        derivativeDt=0;
     }
-    
+
     return constrain((pTerm_x100 + iTerm_x100 - dTerm_x100) >> PowerScale ,-255,255);   //  the /128 is an approximation to bring x100 terms back to units.  Accurate/consistent enough for this function.
 }
 
-int CalcMotor3PID(int TargetPosition, int CurrentPosition)   
+int CalcMotor3PID(int TargetPosition, int CurrentPosition)
 {
-    static int Error=0;                                                     
+    static float Error=0;
     static long pTerm_x100=0;
     static long dTerm_x100=0;
     static long iTerm_x100=0;
-    static int CumError=0;
-    static int LastPosition=0;
-    static int DeltaPosition=0;
+    static float CumError=0;
+    static float LastPosition=0;
+    static float DeltaPosition=0;
     static int KdFilterCount=0;
 
-    Error = TargetPosition - CurrentPosition;
+    static float derivativeDt=0;
+    float position=Filters[2].feedback(CurrentPosition,PIDFilterDt,Disable3);
+    Error = TargetPosition - position;
     if (Disable3) {
-        CumError=0; LastPosition=CurrentPosition; dTerm_x100=0; KdFilterCount=0;
+        CumError=0; LastPosition=position; dTerm_x100=0; KdFilterCount=0; derivativeDt=0;
         return 0;
     }
     if (abs(Error)<=DeadZone3)
@@ -1468,18 +1516,20 @@ int CalcMotor3PID(int TargetPosition, int CurrentPosition)
         CumError = constrain(CumError,-1024,1024);            // Maybe Try 512 as the limits??????
     }
 
-    pTerm_x100 = Kp3_x100 * (long)Error;                    // Error can only be between +/-1023 and Kp1_100 is constrained to 0-1000 so can work with type long
-    iTerm_x100 = (Ki3_x100 * (long)CumError) >> 6;        
+    pTerm_x100 = Kp3_x100 * Error;                    // Error can only be between +/-1023 and Kp1_100 is constrained to 0-1000 so can work with type long
+    iTerm_x100 = (long)(Ki3_x100 * CumError) >> 6;
 
     KdFilterCount++;
+    derivativeDt += PIDFilterDt;
     if (KdFilterCount >= Ks3)      // Apply a level of filtering to Kd parameter to help reduce motor noise
     {
-        DeltaPosition = (CurrentPosition - LastPosition);
-        LastPosition = CurrentPosition;
-        dTerm_x100 = (Kd3_x100 * (long)DeltaPosition)<<5;    
-        KdFilterCount=0;    
+        DeltaPosition = (position - LastPosition);
+        LastPosition = position;
+        dTerm_x100 = (long)(Kd3_x100 * Filters[2].derivative(DeltaPosition,derivativeDt))*32;
+        KdFilterCount=0;
+        derivativeDt=0;
     }
-    
+
     return constrain((pTerm_x100 + iTerm_x100 - dTerm_x100) >> PowerScale ,-255,255);   //  the /128 is an approximation to bring x100 terms back to units.  Accurate/consistent enough for this function.
 }
 
@@ -1528,6 +1578,41 @@ void DisableMotor3()
 
     analogWrite(PWMpin3, 0);
 
+}
+
+// Unlike host position readback (four-count resolution), hold uses the exact
+// current ADC sample. Validate every selected channel before enabling any.
+void HoldMotors(byte mask)
+{
+    if (mask==0 || (mask & ~7)) return;
+    for (byte i=0; i<3; ++i) if (Jog[i].running) return;
+    int feedback[3] = {analogRead(FeedbackPin1),analogRead(FeedbackPin2),analogRead(FeedbackPin3)};
+    int clip[3] = {InputClipMin1,InputClipMin2,InputClipMin3};
+    int cutoff[3] = {CutoffLimitMin1,CutoffLimitMin2,CutoffLimitMin3};
+    for (byte i=0; i<3; ++i) {
+        if ((mask & (1 << i)) && (feedback[i]<clip[i]+4 || feedback[i]>1019-clip[i] || feedback[i]<=cutoff[i] || feedback[i]>=1023-cutoff[i])) {
+            DisableMotor1(); DisableMotor2(); DisableMotor3();
+            return;
+        }
+    }
+    if (mask & 1) {
+        DisableMotor1(); Feedback1=feedback[0]; Target1=Feedback1;
+        CalcMotor1PID(Target1,Feedback1); PWMout1=0;
+    }
+    if (mask & 2) {
+        DisableMotor2(); Feedback2=feedback[1]; Target2=Feedback2;
+        CalcMotor2PID(Target2,Feedback2); PWMout2=0;
+    }
+    if (mask & 4) {
+        DisableMotor3(); Feedback3=feedback[2]; Target3=Feedback3;
+        CalcMotor3PID(Target3,Feedback3); PWMout3=0;
+    }
+    if (mask & 1) { Disable1=0; OutputPort |= 1 << ENBpin1; }
+    if (mask & 2) { Disable2=0; OutputPort |= 1 << ENBpin2; }
+    if (mask & 4) { Disable3=0; OutputPort |= 1 << ENBpin3; }
+#ifdef MODE2
+    WriteOutputPort();
+#endif
 }
 
 
@@ -1615,6 +1700,7 @@ void loop()
     // Initialise the PID ready timer
 
     TimesUp = micros();
+    unsigned long lastPIDFilterTime=TimesUp;
     PIDProcessCounter=0;
     
     // Main Program loop
@@ -1631,6 +1717,9 @@ void loop()
         if (PIDProcessCounter >= PIDProcessDivider)
         {
             PIDProcessCounter=0;
+            unsigned long filterNow=micros();
+            PIDFilterDt=(filterNow-lastPIDFilterTime)*0.000001f;
+            lastPIDFilterTime=filterNow;
             
             // Check and Update Motor 1 drive
     

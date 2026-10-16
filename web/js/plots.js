@@ -11,6 +11,7 @@
   var WINDOW_S = 5;   // seconds visible
   var MAX_POINTS = 6000;
   var activeJoint = 1;
+  var limits=null, scale="auto", frozenAt=null, frozenBuffers=null;
 
   // Per-joint sample buffers
   var buffers = { 1: [], 2: [], 3: [] };
@@ -22,7 +23,7 @@
     duty:   '#39ff6b',
   };
 
-  var showTraces = { target: true, actual: true, error: false, duty: false };
+  var showTraces = { target: true, actual: true, error: false, duty: false, limits:false, clip:false, host:false };
 
   /* Public API */
   window.Scope = {
@@ -31,7 +32,24 @@
       buf.push({ t: Date.now(), target: target, actual: actual, error: error, duty: duty });
       if (buf.length > MAX_POINTS) buf.shift();
     },
-    setJoint: function (j) { activeJoint = j; },
+    setJoint: function (j) { activeJoint = j; limits=null; },
+    resize: resize,
+    setLimits: function (s) { limits=s; },
+    setScale: function (s) { scale=s; },
+    freeze: function () {
+      frozenAt=frozenAt===null?Date.now():null;
+      frozenBuffers=frozenAt===null?null:{1:buffers[1].slice(),2:buffers[2].slice(),3:buffers[3].slice()};
+      return frozenAt!==null;
+    },
+    saveImage: function () {
+      var link=document.createElement('a'); link.download='simsync-m'+activeJoint+'-scope.png'; link.href=canvas.toDataURL('image/png'); link.click();
+    },
+    metrics: function (seconds) {
+      var points=(frozenBuffers || buffers)[activeJoint].filter(function (s) { return s.t>=(frozenAt===null?Date.now():frozenAt)-seconds*1000 && (frozenAt===null || s.t<=frozenAt); });
+      if(!points.length) return null;
+      var sum=0,peak=0,pwm=0; points.forEach(function (s) { sum+=s.error*s.error; peak=Math.max(peak,Math.abs(s.error)); pwm=Math.max(pwm,Math.abs(s.duty)); });
+      return {rms:Math.sqrt(sum/points.length),peak:peak,pwm:pwm};
+    },
     setWindow: function (s) { WINDOW_S = s; },
     toggleTrace: function (name) { showTraces[name] = !showTraces[name]; },
     setTrace: function (name, v) { showTraces[name] = v; },
@@ -55,13 +73,17 @@
 
     ctx.clearRect(0, 0, W, H);
 
+    // Tuning is intentionally light so the boundary geometry and response are easy to inspect.
+    var light = document.body.classList.contains('tuning');
+    var plotText = light ? '#627286' : '#7a8699';
+    var gridColor = light ? 'rgba(27,42,61,0.10)' : 'rgba(255,255,255,0.04)';
     // Background
-    ctx.fillStyle = '#07090f';
+    ctx.fillStyle = light ? '#fbfcfe' : '#07090f';
     ctx.fillRect(0, 0, W, H);
 
     // Grid lines
     var gridLines = 6;
-    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+    ctx.strokeStyle = gridColor;
     ctx.lineWidth = 1;
     for (var i = 1; i < gridLines; i++) {
       var y = Math.round(H * i / gridLines) + 0.5;
@@ -73,14 +95,14 @@
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
     }
 
-    var now = Date.now();
-    var buf = buffers[activeJoint];
-    if (buf.length < 2) return;
+    var now = frozenAt===null?Date.now():frozenAt;
+    var buf = (frozenBuffers || buffers)[activeJoint];
+
 
     var windowMs = WINDOW_S * 1000;
     var cutoff = now - windowMs;
-    var visible = buf.filter(function (s) { return s.t >= cutoff; }).map(function (s) { return {t:s.t, target:Angles.value(activeJoint,s.target), actual:Angles.value(activeJoint,s.actual), error:Angles.value(activeJoint,s.error,true), duty:s.duty}; });
-    if (visible.length < 2) return;
+    var visible = buf.filter(function (s) { return s.t >= cutoff && s.t <= now; }).map(function (s) { return {t:s.t, target:Angles.value(activeJoint,s.target), actual:Angles.value(activeJoint,s.actual), error:Angles.value(activeJoint,s.error,true), duty:s.duty}; });
+
 
     // Determine Y range from active traces
     var allVals = [];
@@ -89,7 +111,15 @@
       if (showTraces.actual) allVals.push(s.actual);
       if (showTraces.error)  allVals.push(s.error, -s.error);
     });
-    if (allVals.length === 0) return;
+    var boundaries=[];
+    if(limits) {
+      if(showTraces.limits) boundaries.push({name:'CUTOFF',lo:limits.cutoff,hi:1023-limits.cutoff,color:'#ff3d5a'});
+      if(showTraces.clip) boundaries.push({name:'CLIP',lo:limits.clip,hi:1023-limits.clip,color:'#ffb830'});
+      if(showTraces.host && limits.configured) boundaries.push({name:'HOST',lo:limits.min,hi:limits.max,color:'#4fa3ff'});
+    }
+    boundaries.forEach(function (b) { b.lo=Angles.value(activeJoint,b.lo); b.hi=Angles.value(activeJoint,b.hi); allVals.push(b.lo,b.hi); });
+    if(scale==='full') allVals.push(Angles.value(activeJoint,0),Angles.value(activeJoint,1023));
+    if(allVals.length===0) allVals=[Angles.value(activeJoint,0),Angles.value(activeJoint,1023)];
 
     var yMin = Math.min.apply(null, allVals);
     var yMax = Math.max.apply(null, allVals);
@@ -103,6 +133,23 @@
     function yOf(val) {
       return H - ((val - yMin) / (yMax - yMin)) * H;
     }
+
+    var boundaryLabels=[];
+    boundaries.forEach(function (b) {
+      [b.lo,b.hi].forEach(function (value) {
+        var y=yOf(value); ctx.strokeStyle=b.color; ctx.lineWidth=1; ctx.setLineDash([6,4]);
+        ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); ctx.setLineDash([]);
+        boundaryLabels.push({y:Math.max(12,y-5),text:b.name+' '+value.toFixed(1)+Angles.unit(activeJoint),color:b.color});
+      });
+    });
+    boundaryLabels.sort(function (a,b) {return a.y-b.y;});
+    var labelY=-2;
+    boundaryLabels.forEach(function (label) {
+      labelY=Math.max(label.y,labelY+14); ctx.font='10px monospace'; ctx.fillStyle=label.color; ctx.textAlign='right';
+      ctx.fillText(label.text, W-85,Math.min(H-8,labelY));
+    });
+    ctx.textAlign='left';
+    if(!visible.length) { ctx.fillStyle=plotText; ctx.font='12px monospace'; ctx.textAlign='center'; ctx.fillText('Waiting for live motor feedback',W/2,H/2); ctx.textAlign='left'; }
 
     function drawTrace(key, colorHex, getValue, lineW) {
       if (!showTraces[key]) return;
@@ -121,18 +168,18 @@
     }
 
     // Duty as shaded area (green, secondary)
-    if (showTraces.duty) {
+    if (showTraces.duty && visible.length) {
       var dutyMax = 255;
       ctx.fillStyle = 'rgba(57,255,107,0.12)';
       ctx.beginPath();
       var first = true;
       visible.forEach(function (s) {
         var px = xOf(s);
-        var py = H / 2 - (s.duty / dutyMax) * (H / 2);
-        if (first) { ctx.moveTo(px, H / 2); ctx.lineTo(px, py); first = false; }
+        var py = H - (Math.abs(s.duty) / dutyMax) * H;
+        if (first) { ctx.moveTo(px, H); ctx.lineTo(px, py); first = false; }
         else        { ctx.lineTo(px, py); }
       });
-      ctx.lineTo(xOf(visible[visible.length - 1]), H / 2);
+      ctx.lineTo(xOf(visible[visible.length - 1]), H);
       ctx.closePath();
       ctx.fill();
     }
@@ -153,7 +200,7 @@
 
     // Numeric axes use the same per-motor angle calibration as the traces.
     ctx.font = '10px monospace';
-    ctx.fillStyle = '#7a8699';
+    ctx.fillStyle = plotText;
     ctx.textAlign = 'right';
     for (var tick=1; tick<gridLines; tick++) {
       var value=yMax-(yMax-yMin)*tick/gridLines;
@@ -170,6 +217,8 @@
       var labels = [];
       if (showTraces.actual) labels.push({ label: 'ACT', val: last.actual.toFixed(1) + Angles.unit(activeJoint), color: colors.actual });
       if (showTraces.target) labels.push({ label: 'TGT', val: last.target.toFixed(1) + Angles.unit(activeJoint), color: colors.target });
+      if (showTraces.duty) labels.push({label:'PWM',val:Math.abs(last.duty)+'/255',color:colors.duty});
+      if (frozenAt!==null) labels.push({label:'DISPLAY',val:'FROZEN',color:'#ffb830'});
       if (showTraces.error)  labels.push({ label: 'ERR', val: last.error.toFixed(2) + Angles.unit(activeJoint),  color: colors.error });
       ctx.font = '10px JetBrains Mono, monospace';
       var ry = 14;

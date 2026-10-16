@@ -28,6 +28,13 @@
   <button id="estopBtn" title="Latch host motion pause / Clear">LATCH PAUSE</button>
 </header>
 
+<nav id="viewTabs" aria-label="Workspace">
+  <div class="workspace-tabs" role="tablist" aria-label="Motor workspace">
+  <button id="dashboardTab" class="view-tab active" role="tab" aria-selected="true" aria-controls="mainLeft" data-view="dashboard">Dashboard</button>
+  <button id="tuningTab" class="view-tab" role="tab" aria-selected="false" aria-controls="tuningPanel" tabindex="-1" data-view="tuning">Motor Tuning <span>SMC3</span></button>
+  </div>
+  <a class="guide-link" href="/guide.html">Calibration guide <span aria-hidden="true">↗</span></a>
+</nav>
 <!-- ====== MAIN GRID ====== -->
 <div id="app">
 
@@ -36,8 +43,12 @@
 
     <!-- OSCILLOSCOPE -->
     <div id="scopePanel">
+      <div id="tuningIntro" hidden><div class="panel-title">SMC3 CLOSED-LOOP WORKSPACE</div><h1>Motor tuning</h1><p>Measure a small step, add damping, then validate the full travel range.</p><span id="controllerInfo" class="control-note">Waiting for controller</span></div>
       <div id="scopeHeader">
         <span id="scopeTitle">POSITION</span>
+        <label class="display-unit" for="displayUnit">Display
+          <select id="displayUnit"><option value="counts">Counts</option><option value="degrees">Approx. degrees</option><option value="percent">Range %</option></select>
+        </label>
 
         <!-- Joint tabs -->
         <div class="joint-tabs">
@@ -63,7 +74,17 @@
         </div>
       </div>
 
-      <canvas id="scopeCanvas"></canvas>
+      <div id="scopeTools" hidden>
+        <div class="scope-options">
+          <button class="tw-btn" data-trace="limits" aria-pressed="false">Motor cutoff</button>
+          <button class="tw-btn" data-trace="clip" aria-pressed="false">Input clipping</button>
+          <button class="tw-btn" data-trace="host" aria-pressed="false">Host bounds</button>
+          <label>Scale <select id="scopeScale"><option value="auto">Auto</option><option value="full">Full travel</option></select></label>
+        </div>
+        <div class="btn-row"><button id="scopeFreeze" class="btn">Freeze display</button><button id="scopeImage" class="btn">Save image</button><button id="tuningCSV" class="btn">Export CSV</button></div>
+      </div>
+      <canvas id="scopeCanvas" aria-label="Live motor target, feedback, PWM and travel limits"></canvas>
+      <div id="tuningMetrics" hidden><span id="trackingRMS">RMS error —</span><span id="trackingPeak">Peak error —</span><span id="trackingPWM">Peak PWM —</span><span>Last 5s · PWM magnitude / 255</span></div>
 
       <div class="scope-legend">
         <div class="legend-item"><div class="legend-swatch" style="background:#00e5ff"></div>Target</div>
@@ -78,6 +99,7 @@
       <!-- J1 -->
       <div class="joint-card">
         <div class="jc-header"><span>M1 · Front L</span><span id="j1Duty" class="monoval" style="color:var(--text-dim);font-size:9px"></span></div>
+        <div id="j1State" class="control-note">Waiting for controller</div>
         <div id="j1Actual" class="jc-actual">--.- counts</div>
         <div id="j1Target" class="jc-target">TGT --.- counts</div>
         <div id="j1Err"    class="jc-err">ERR --.- counts</div>
@@ -89,6 +111,7 @@
       <!-- J2 -->
       <div class="joint-card">
         <div class="jc-header"><span>M2 · Front R</span></div>
+        <div id="j2State" class="control-note">Waiting for controller</div>
         <div id="j2Actual" class="jc-actual">--.- counts</div>
         <div id="j2Target" class="jc-target">TGT --.- counts</div>
         <div id="j2Err"    class="jc-err">ERR --.- counts</div>
@@ -100,6 +123,7 @@
       <!-- J3 -->
       <div class="joint-card">
         <div class="jc-header"><span>M3 · Rear</span></div>
+        <div id="j3State" class="control-note">Waiting for controller</div>
         <div id="j3Actual" class="jc-actual">--.- counts</div>
         <div id="j3Target" class="jc-target">TGT --.- counts</div>
         <div id="j3Err"    class="jc-err">ERR --.- counts</div>
@@ -110,8 +134,83 @@
       </div>
     </div>
 
+    <section id="tuningPanel" role="tabpanel" aria-labelledby="tuningTab" hidden>
+      <div id="tuningMotors" class="tuning-motors" aria-label="Select motor to tune"></div>
+      <div class="tuning-card tuning-response">
+        <div class="panel-title" id="responseTitle">Measured response</div>
+        <p id="tuningAdvice" aria-live="polite">Run a small step to measure this motor.</p>
+        <div id="responseComparison" class="control-note"></div>
+        <div class="btn-row"><button id="stageMeasured" class="btn">Stage best measured gains</button><button id="testPositive" class="btn btn-cyan">Test + step</button><button id="testNegative" class="btn btn-cyan">Test − step</button><button id="tuningEnable" class="btn btn-amber">Run only selected motor</button><button id="soloStop" class="btn btn-red">Stop all motors</button></div>
+        <p id="soloState" class="control-note">Solo mode stops the other motors and enables manual/test output for one motor. Pause stops it. Resume returns to all included motors.</p>
+        <p class="control-note">Compare the same step size and direction on this motor. Gains are staged for review; Apply Gains sends them. Repeat in both directions and under your operating load.</p>
+      </div>
+      <div class="tuning-grid">
+        <div class="tuning-card">
+          <div class="panel-title" id="filterTitle">Selected motor · feedback filters</div>
+          <div id="filterReadback" class="control-note">Waiting for filter readback</div>
+          <div class="sweep-grid">
+            <div class="sweep-field"><label for="filterLPF">Feedback LPF (Hz · 0 = off)</label><input id="filterLPF" type="number" min="0" max="200" step="0.1" value="0"></div>
+            <div class="sweep-field"><label for="filterHPF">Derivative HPF (Hz · 0 = off)</label><input id="filterHPF" type="number" min="0" max="50" step="0.1" value="0"></div>
+          </div>
+          <p class="control-note">LPF smooths the feedback used by PID. Lower cutoff adds smoothing and delay, which can worsen overshoot. HPF affects only derivative damping; it never removes DC position holding. Start with HPF off. Raw feedback still drives travel cutoffs and safety checks.</p>
+          <div class="btn-row"><button id="filterApply" class="btn btn-cyan">Apply Filters</button><button id="filterRead" class="btn">Read Filters</button></div>
+          <p class="control-note">Pause and turn jog mode off to apply. Per-motor cutoffs save for restart in SimSync; Arduino EEPROM does not store them. Updated firmware is required.</p>
+        </div>
+        <div id="tuningPID" class="tuning-card"></div>
+        <div id="tuningLimits" class="tuning-card"></div>
+        <div class="tuning-card">
+          <div class="panel-title">Loop timing & derivative filter</div>
+          <div id="timingReadback" class="control-note">Waiting for timing readback</div>
+          <div class="sweep-grid">
+            <div class="sweep-field"><label for="tuningKs">Ks · derivative samples</label><input id="tuningKs" type="number" min="1" max="100" step="1" value="1"></div>
+            <div class="sweep-field"><label for="tuningDivider">Fpid · divider</label><input id="tuningDivider" type="number" min="1" max="10" step="1" value="1"></div>
+            <div class="sweep-field"><label for="tuningPWM12">Fpwm · M1 + M2 (kHz)</label><input id="tuningPWM12" type="number" min="5" max="35" step="1" value="25"></div>
+            <div class="sweep-field"><label for="tuningPWM3">Fpwm · M3</label><select id="tuningPWM3"><option value="31">31.25 kHz</option><option value="4">3.906 kHz</option></select></div>
+          </div>
+          <p class="control-note">Ks filters the derivative term. Fpid and PWM timers are shared controller settings; M1 and M2 share one PWM timer.</p>
+          <div class="btn-row"><button id="timingApply" class="btn btn-cyan">Apply Timing</button><button id="timingRead" class="btn">Read</button></div>
+        </div>
+        <div class="tuning-card">
+          <div class="panel-title">Output mode</div>
+          <div id="signalState" class="control-note">Monitor · no generated targets</div>
+          <div class="sweep-grid">
+            <div class="sweep-field"><label for="signalMode">Test signal</label><select id="signalMode"><option value="sine">Sine</option><option value="triangle">Triangle</option><option value="square">Square</option></select></div>
+            <div class="sweep-field"><label for="signalAmplitude">Amplitude (± counts)</label><input id="signalAmplitude" type="number" min="1" max="20" step="1" value="8"></div>
+            <div class="sweep-field"><label for="signalPeriod">Period (seconds)</label><input id="signalPeriod" type="number" min="0.5" max="3" step="0.1" value="1.5"></div>
+          </div>
+          <p class="control-note">Bench mode. The signal stays within ± amplitude of the current feedback and returns to baseline. Both endpoints must fit host bounds.</p>
+          <div class="btn-row"><button id="signalStart" class="btn btn-cyan">Run Signal</button><button id="signalStop" class="btn btn-amber">Stop / Pause</button></div>
+          <div id="tuningStep"></div>
+        </div>
+      </div>
+      <div class="tuning-card tuning-response">
+        <div class="panel-title">Stability ladder · change one variable at a time</div>
+        <p class="control-note">Use Run only this motor. Start at the last stable PWM cap, Ki = 0, and small ±4–8 count steps. If it chatters at rest, check raw feedback and try a 1–2 count deadzone before strong filtering. A feedback LPF trial around 80 Hz is a starting experiment, not a guaranteed tune; keep HPF off.</p>
+        <p class="control-note">Raise PWM max by 5–10 counts, then repeat both step directions with the same gains. Keep the change only if holding is quiet and ringing dies out. If overshoot grows, return to the last stable cap, add Kd in small increments and retest. Once the higher cap is stable, increase Kp about 5% and retest. Do not jump PWM 100 → 200 or increase PWM and Kp together.</p>
+        <p class="control-note">Repeat at several positions under your operating load; monitor current and temperature. More PWM is useful only when the measured response needs it. If a limit does not settle or the guard trips, roll back. Lower LPF/raising HPF can remove useful damping—retune after any filter change.</p>
+      </div>
+      <div class="tuning-guide">
+        <div class="tuning-guide-main">
+          <div class="panel-title">Recommended PD sequence</div>
+          <div class="tuning-steps">
+            <div class="tuning-step"><span>01</span><strong>Protect</strong><p>Pause output, verify feedback direction, center, host bounds, and clip margins.</p></div>
+            <div class="tuning-step"><span>02</span><strong>Find Kp</strong><p>Set Ki = 0 and run a 4–8 count step. Increase Kp until motion is quick but just short of ringing.</p></div>
+            <div class="tuning-step"><span>03</span><strong>Add Kd</strong><p>Repeat the same step and increase Kd until overshoot and ringing are controlled. Stop if PWM clips.</p></div>
+            <div class="tuning-step"><span>04</span><strong>Validate</strong><p>Run both step directions, then a slow signal. Keep the gains that settle without sustained PWM saturation.</p></div>
+          </div>
+        </div>
+        <div class="clip-readback">
+          <div class="panel-title">SMC3 boundary model</div>
+          <div id="clipSummary" class="clip-summary">Waiting for motor readback</div>
+          <div id="clipHealth" class="clip-health">Clipping guidance will appear when connected.</div>
+          <p class="control-note">Cutoff disables the motor at the physical safety edge. Clip limits the commanded target before it reaches cutoff. Keep host min/max at least 4 counts inside the clip window.</p>
+        </div>
+      </div>
+      <div id="tuningResults"></div>
+      <div class="tuning-grid"><div id="tuningPosition" class="tuning-card"></div><div id="tuningJog" class="tuning-card"></div><div id="tuningMapping" class="tuning-card"></div><div id="tuningDisplay" class="tuning-card"></div></div>
+    </section>
     <!-- TELEMETRY GAUGES -->
-    <details class="panel secondary"><summary>Game telemetry</summary>
+    <details class="panel secondary" id="gameTelemetryPanel" open><summary>Game telemetry</summary>
     <div id="gaugeRow">
       <div class="gauge-card">
         <div class="gauge-label">Speed</div>
@@ -159,7 +258,7 @@
     </details>
 
     <!-- STEP TEST RESULTS -->
-    <details class="panel secondary"><summary>Test results <span id="testRunning" class="running-indicator" style="display:none"></span></summary>
+    <details class="panel secondary tuning-only" id="testResultsPanel"><summary>Test results <span id="testRunning" class="running-indicator" style="display:none"></span></summary>
       <div class="table-scroll">
         <table id="resultsTable">
           <thead>
@@ -197,15 +296,16 @@
     <div class="sidebar-section">
       <div class="panel-title">Host Output</div>
       <div id="commandStatus" role="status" class="control-note"></div>
+      <div id="settingsFile" class="control-note tuning-only">Applied tuning is saved automatically.</div>
       <div class="btn-row" style="margin-bottom:8px">
-        <button id="armBtn" class="btn btn-green">RESUME</button>
+        <button id="armBtn" class="btn btn-green" title="Validate and enable every included motor at its current position">RESUME</button>
         <button id="disarmBtn" class="btn btn-amber">PAUSE</button>
         <button id="estopClearBtn" class="btn btn-red">CLEAR PAUSE</button>
       </div>
     </div>
 
     <!-- DIRECT ANGLE -->
-    <div class="sidebar-section">
+    <div class="sidebar-section tuning-only" id="positionPanel">
       <div class="panel-title">Position <span id="positionUnit">counts</span></div>
       <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
         <select id="manJoint" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:4px 6px;font-size:11px">
@@ -213,7 +313,7 @@
           <option value="2">M2 Front R</option>
           <option value="3">M3 Rear</option>
         </select>
-        <input id="manPosition" type="number" value="512" step="1" min="0" max="1023"
+        <input id="manPosition" type="number" value="338" step="1" min="0" max="1023"
           style="background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:4px 8px;font-family:var(--mono);font-size:11px;width:70px">
         <button id="manGoBtn" class="btn btn-cyan">GO</button>
       </div>
@@ -226,7 +326,7 @@
       </div>
     </div>
 
-    <details class="sidebar-section">
+    <details class="sidebar-section tuning-only" id="jogPanel">
       <summary>Open-loop Jog</summary>
       <label class="control-note"><input id="diagnosticsToggle" type="checkbox"> Enable jog · pauses PID & game output</label>
       <div class="sweep-grid">
@@ -240,46 +340,48 @@
       </div>
       <div id="jogStatus" class="control-note">Checking firmware</div>
       <div id="jogFeedback" class="control-note"></div>
+      <p class="control-note">Check one unloaded motor at a time: a short positive jog must increase its own feedback count; a negative jog must decrease it. If feedback moves the opposite way, cut motor power and correct that motor's drive/feedback direction before enabling PID. Do not reuse another motor's gains as a verified tune.</p>
 
     </details>
 
     <!-- PID TUNING -->
-    <div class="sidebar-section">
-      <div class="panel-title">PID</div>
+    <div class="sidebar-section tuning-only" id="pidPanel">
+      <div class="panel-title">PID · selected motor</div>
       <div id="liveGains" class="control-note">Waiting for controller</div>
 
       <div class="pid-row">
         <span class="pid-label">Kp</span>
-        <input id="kpSlider" class="pid-slider" type="range" min="0.1" max="30" step="0.1" value="1">
-        <input id="kpNum" class="pid-num" type="number" min="0.1" max="30" step="0.1" value="1.00">
+        <input aria-label="Proportional gain slider" id="kpSlider" class="pid-slider" type="range" min="0.1" max="30" step="0.1" value="20">
+        <input aria-label="Proportional gain" id="kpNum" class="pid-num" type="number" min="0.1" max="30" step="0.1" value="20.00">
       </div>
       <div class="pid-row">
         <span class="pid-label" style="color:var(--amber)">Ki</span>
-        <input id="kiSlider" class="pid-slider ki" type="range" min="0" max="2" step="0.01" value="0">
-        <input id="kiNum" class="pid-num" type="number" min="0" max="2" step="0.01" value="0.00">
+        <input aria-label="Integral gain slider" id="kiSlider" class="pid-slider ki" type="range" min="0" max="2" step="0.01" value="0">
+        <input aria-label="Integral gain" id="kiNum" class="pid-num" type="number" min="0" max="2" step="0.01" value="0.00">
       </div>
       <div class="pid-row">
         <span class="pid-label" style="color:var(--purple)">Kd</span>
-        <input id="kdSlider" class="pid-slider kd" type="range" min="0" max="5" step="0.05" value="0.4">
-        <input id="kdNum" class="pid-num" type="number" min="0" max="5" step="0.05" value="0.40">
+        <input aria-label="Derivative gain slider" id="kdSlider" class="pid-slider kd" type="range" min="0" max="5" step="0.05" value="0.4">
+        <input aria-label="Derivative gain" id="kdNum" class="pid-num" type="number" min="0" max="5" step="0.05" value="0.40">
       </div>
 
       <div class="btn-row" style="margin-top:4px">
         <button id="pidSendBtn" class="btn btn-cyan">Apply Gains</button>
         <button id="pidReadBtn" class="btn">Read</button>
+        <button id="stablePreset" class="btn btn-purple" title="Fills the gain fields; Apply Gains sends them">P20 / D0.4</button>
         <button id="pdBtn" class="btn">Ki = 0</button>
-        <button id="pidSaveBtn" class="btn btn-green" title="Saves all controller channels, not host bounds">Save EEPROM</button>
+        <button id="pidSaveBtn" class="btn btn-green" title="Saves firmware values to Arduino EEPROM; UI Apply also saves the host Markdown settings">Save EEPROM</button>
       </div>
     </div>
 
-    <details class="sidebar-section">
+    <details class="sidebar-section tuning-only" id="limitsPanel">
       <summary>Motor limits · ADC / PWM</summary>
       <div id="motorState" class="control-note">Waiting for controller</div>
       <label class="control-note"><input id="motorActive" type="checkbox"> Include in output</label>
       <div class="sweep-grid">
         <div class="sweep-field"><label for="motorMin">Host min</label><input id="motorMin" value="50" type="number" min="0" max="1023" step="1"></div>
         <div class="sweep-field"><label for="motorMax">Host max</label><input id="motorMax" value="650" type="number" min="0" max="1023" step="1"></div>
-        <div class="sweep-field"><label for="motorCenter">Center</label><input id="motorCenter" value="512" type="number" min="0" max="1023" step="1"></div>
+        <div class="sweep-field"><label for="motorCenter">Center</label><input id="motorCenter" value="338" type="number" min="0" max="1023" step="1"></div>
         <div class="sweep-field"><label for="pwmMax">PWM max</label><input id="pwmMax" value="100" type="number" min="0" max="255" step="1"></div>
         <div class="sweep-field"><label for="pwmMin">PWM min</label><input id="pwmMin" value="0" type="number" min="0" max="255" step="1"></div>
         <div class="sweep-field"><label for="pwmRev">PWM reverse</label><input id="pwmRev" value="50" type="number" min="0" max="255" step="1"></div>
@@ -287,19 +389,20 @@
         <div class="sweep-field"><label for="motorClip">Clip margin</label><input id="motorClip" value="40" type="number" min="2" max="255" step="1"></div>
         <div class="sweep-field"><label for="motorDeadzone">Deadzone</label><input id="motorDeadzone" value="0" type="number" min="0" max="255" step="1"></div>
       </div>
+      <p class="control-note">Pause to apply limits. Margins are symmetric: margin to 1023 − margin. Require cutoff &lt; clip and host bounds ≥ 4 counts inside clipping. EEPROM saves all controller channels; UI Apply saves tuning, host bounds and center to simsync-settings.md for restart.</p>
       <div id="firmwareRange" class="control-note"></div>
       <div class="btn-row">
         <button id="captureMin" class="btn">Use actual min</button>
         <button id="captureMax" class="btn">Use actual max</button>
         <button id="captureCenter" class="btn">Use actual center</button>
         <button id="limitsApply" class="btn btn-cyan">Apply Limits</button>
-        <button id="motorEnable" class="btn btn-amber">Enable Motor</button>
+        <button id="motorEnable" class="btn btn-amber">Run only this motor</button>
       </div>
 
     </details>
 
     <!-- STEP TEST LAUNCHER -->
-    <details class="sidebar-section">
+    <details class="sidebar-section tuning-only" id="stepPanel">
       <summary>Step Test</summary>
 
       <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
@@ -322,7 +425,7 @@
     </details>
 
     <!-- MOTION MAPPING -->
-    <details class="sidebar-section">
+    <details class="sidebar-section tuning-only" id="mappingPanel">
       <summary>Motion Mapping</summary>
 
       <div class="mcfg-row">
@@ -349,14 +452,17 @@
       <button id="motionSendBtn" class="btn btn-cyan" style="width:100%;margin-top:4px">Apply</button>
     </details>
 
-    <details class="sidebar-section">
-      <summary>Angle calibration</summary>
+    <details class="sidebar-section tuning-only" id="displayPanel">
+      <summary>Display range · counts → angle</summary>
       <div class="sweep-grid">
-        <div class="sweep-field"><label for="angleZero">0° at ADC count</label><input id="angleZero" type="number" min="0" max="1023" value="512"></div>
-        <div class="sweep-field"><label for="angleSpan">0–1023 span (°)</label><input id="angleSpan" type="number" min="0.1" max="3600" step="0.1" placeholder="Pot travel"></div>
+        <div class="sweep-field"><label for="angleMinCount">Pot min count</label><input id="angleMinCount" type="number" min="0" max="1022" step="1" value="8"></div>
+        <div class="sweep-field"><label for="angleMaxCount">Pot max count</label><input id="angleMaxCount" type="number" min="1" max="1023" step="1" value="668"></div>
+        <div class="sweep-field"><label for="angleMinDegrees">Angle at min (°)</label><input id="angleMinDegrees" type="number" step="0.1" value="0"></div>
+        <div class="sweep-field"><label for="angleMaxDegrees">Angle at max (°)</label><input id="angleMaxDegrees" type="number" step="0.1" value="270"></div>
       </div>
-      <button id="angleApply" class="btn btn-cyan">Apply to selected motor</button>
-      <div id="angleStatus" class="control-note">Uncalibrated · ADC counts</div>
+      <div class="btn-row"><button id="angleApply" class="btn btn-cyan">Apply display range</button><button id="angleReset" class="btn">Use defaults</button></div>
+      <div id="angleStatus" class="control-note">8–668 counts → approximately 0–270°</div>
+      <p class="control-note">Human-readable estimate. Values outside the pot range are extrapolated and may be unreliable. Position commands, steps, host limits and CSV always use counts. This range does not restrict motor travel.</p>
     </details>
   </div><!-- /sidebar -->
 
@@ -365,5 +471,6 @@
 <script src="/js/angles.js"></script>
 <script src="/js/plots.js"></script>
 <script src="/js/app.js"></script>
+<script src="/js/tuning.js"></script>
 </body>
 </html>

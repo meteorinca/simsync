@@ -50,7 +50,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		PitchGain: 12.0, RollGain: 10.0, HeaveGain: 8.0,
-		PitchNeutral: 512.0, RollNeutral: 512.0, HeaveNeutral: 512.0,
+		PitchNeutral: 338.0, RollNeutral: 338.0, HeaveNeutral: 338.0,
 		PitchLimit: 20.0, RollLimit: 25.0, HeaveLimit: 15.0,
 		FilterHz: 15.0,
 	}

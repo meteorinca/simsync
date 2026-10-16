@@ -42,6 +42,8 @@ test('startup fields are prefilled and refresh when automatic configuration comp
   const d = dashboard();
   assert.equal(d.elements.get('motorMin').value, '50');
   assert.equal(d.elements.get('motorMax').value, '650');
+  assert.equal(d.elements.get('motorCenter').value,'338');
+  assert.equal(d.elements.get('kpNum').value,'20.00');
   assert.equal(d.elements.get('kiNum').value, '0.00');
   d.motors[0].configured = false;
   d.motors[0].ki = 0.4;
@@ -70,6 +72,19 @@ test('selection, gain readback and commands use the same motor', async () => {
   assert.equal(d.requests.at(-1).url, '/api/target?joint=2&angle=520.0');
   d.elements.get('pidSendBtn').click();
   assert.equal(d.requests.at(-1).url, '/api/pid?joint=2');
+});
+
+test('run-only action targets selected motor and solo mode gates other motor motion', async () => {
+ const d=dashboard();d.motors[1].jog_supported=true;await d.poll();
+ const select=d.elements.get('manJoint');select.value='2';select.events.change.call(select);
+ d.elements.get('motorEnable').click();
+ assert.equal(d.requests.at(-1).url,'/api/motor/solo?joint=2');
+ assert.equal(d.requests.at(-1).options.method,'POST');
+ d.motors[1].solo=true;await d.poll();
+ assert.equal(d.elements.get('manGoBtn').disabled,false);
+ select.value='1';select.events.change.call(select);await d.poll();
+ assert.equal(d.elements.get('manGoBtn').disabled,true);
+ assert.equal(d.elements.get('stepTestBtn').disabled,true);
 });
 
 test('readback does not overwrite edits and disabled motor cannot be jogged', async () => {
@@ -113,31 +128,88 @@ test('open-loop jog sends a signed timed pulse for the selected motor', async ()
   assert.equal(d.requests.at(-1).url,'/api/jog/stop');
 });
 
-test('calibrated degrees round-trip to counts without changing host bounds', async () => {
+test('default display conversion switches without changing count commands or edits', async () => {
  const d=dashboard(); await d.poll();
- d.elements.get('angleZero').value='512'; d.elements.get('angleSpan').value='270';
- d.elements.get('angleApply').click();
- assert.equal(d.elements.get('j1Actual').textContent,'0.0°');
- assert.equal(d.elements.get('stepPlus5').textContent,'+5°');
+ assert.equal(d.elements.get('angleMinCount').value,8);
+ assert.equal(d.elements.get('angleMaxCount').value,668);
+ assert.equal(d.elements.get('angleMaxDegrees').value,270);
+ d.elements.get('manPosition').value='520';
+ d.elements.get('stepSize').value='12';
+ const before=d.requests.length;
+ const display=d.elements.get('displayUnit');
+ display.value='degrees'; display.events.change.call(display);
+ assert.equal(d.elements.get('j1Actual').textContent,'≈206.2°');
+ assert.equal(d.elements.get('j1Actual').title,'512 counts');
+ assert.equal(d.elements.get('manPosition').value,'520');
+ assert.equal(d.elements.get('stepSize').value,'12');
  assert.equal(d.elements.get('motorMin').value,480);
- d.elements.get('manPosition').value='10'; d.elements.get('manGoBtn').click();
- assert.equal(d.requests.at(-1).url,'/api/target?joint=1&angle=549.9');
- d.elements.get('stepMinus5').click();
- assert.equal(d.requests.at(-1).url,'/api/target?joint=1&angle=493.1');
- const select=d.elements.get('manJoint'); select.value='2'; select.events.change.call(select);
- assert.equal(d.elements.get('stepPlus5').textContent,'+5 counts');
+ assert.equal(d.requests.length,before);
+ d.elements.get('manGoBtn').click();
+ assert.equal(d.requests.at(-1).url,'/api/target?joint=1&angle=520.0');
+ d.elements.get('stepPlus5').click();
+ assert.equal(d.requests.at(-1).url,'/api/target?joint=1&angle=517.0');
+ d.elements.get('stepTestBtn').click();
+ assert.match(d.requests.at(-1).url,/step=12$/);
+ display.value='percent'; display.events.change.call(display);
+ assert.equal(d.elements.get('j1Actual').textContent,'76.4%');
+ display.value='counts'; display.events.change.call(display);
+ assert.equal(d.elements.get('j1Actual').textContent,'512.0 counts');
 });
 
-test('invalid calibration cannot change commands or send motor writes', async () => {
+test('display range edits and reset never send motor writes', async () => {
  const d=dashboard(); await d.poll(); const before=d.requests.length;
- d.elements.get('angleZero').value='512'; d.elements.get('angleSpan').value='0';
+ d.elements.get('angleMinCount').value='668';
+ d.elements.get('angleMaxCount').value='8';
  d.elements.get('angleApply').click();
  assert.equal(d.requests.length,before);
- assert.match(d.elements.get('commandStatus').textContent,/full-scale/);
- assert.equal(d.elements.get('stepPlus5').textContent,'+5 counts');
+ assert.match(d.elements.get('commandStatus').textContent,/min count/);
+ d.elements.get('angleMinCount').value='0';
+ d.elements.get('angleMaxCount').value='1000';
+ d.elements.get('angleMaxDegrees').value='180';
+ d.elements.get('angleApply').click();
+ const display=d.elements.get('displayUnit');display.value='degrees';display.events.change.call(display);
+ assert.equal(d.elements.get('j1Actual').textContent,'≈92.2°');
+ d.elements.get('angleReset').click();
+ assert.equal(d.elements.get('j1Actual').textContent,'≈206.2°');
+ assert.equal(d.requests.length,before);
 });
 test('secondary panels are collapsed and polarity UI is absent', () => {
- assert.match(html,/<details class="sidebar-section">\s*<summary>Open-loop Jog/);
- assert.match(html,/<details class="sidebar-section">\s*<summary>Motor limits/);
+ assert.match(html,/<details class="sidebar-section tuning-only" id="jogPanel">\s*<summary>Open-loop Jog/);
+ assert.match(html,/<details class="sidebar-section tuning-only" id="limitsPanel">\s*<summary>Motor limits/);
  assert.doesNotMatch(html,/directionCheck|directionStatus|Pause holds|Power cutoff/);
+});
+
+
+test('reported stable preset only stages gains for the selected motor', async () => {
+ const d=dashboard(); await d.poll(); const before=d.requests.length;
+ d.elements.get('stablePreset').click();
+ assert.equal(d.elements.get('kpNum').value,'20.00');
+ assert.equal(d.elements.get('kiNum').value,'0.00');
+ assert.equal(d.elements.get('kdNum').value,'0.40');
+ assert.equal(d.requests.length,before);
+ d.elements.get('pidSendBtn').click();
+ assert.deepEqual(JSON.parse(d.requests.at(-1).options.body),{kp:20,ki:0,kd:0.4});
+});
+
+
+test('endpoint math, error scaling, extrapolation and saved display preference', () => {
+ const saved=new Map();
+ function load() {
+  const context={window:{},localStorage:{getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,value)}};
+  vm.runInNewContext(readFileSync(new URL('web/js/angles.js',import.meta.url),'utf8'),context);
+  return context.window.Angles;
+ }
+ let a=load();assert.equal(a.mode(),'counts');a.setMode('degrees');
+ assert.equal(a.value(1,8),0);assert.equal(a.value(1,668),270);
+ assert.equal(a.value(1,338),135);
+ assert.ok(Math.abs(a.value(1,4,true)-4*270/660)<1e-9);
+ assert.ok(a.value(1,700)>270);
+ a=load();assert.equal(a.mode(),'degrees');
+ a.setMode('percent');assert.equal(a.value(1,338),50);
+ a.set(2,100,500,-90,90);a.setMode('degrees');
+ assert.equal(a.value(2,300),0);assert.equal(a.value(1,338),135);
+ a=load();assert.equal(a.value(2,500),90);
+ saved.set('simsync.angles',JSON.stringify({1:{zero:512,span:270}}));
+ a=load();assert.equal(a.value(1,512),0);
+ assert.ok(Math.abs(a.value(1,1023)-(1023-512)*270/1023)<1e-9);
 });

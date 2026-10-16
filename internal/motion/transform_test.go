@@ -11,11 +11,11 @@ func TestActuatorMix(t *testing.T) {
 		lat, long, susp float32
 		want            Targets
 	}{
-		{"neutral", 0, 0, 0, Targets{512, 512, 512}},
-		{"roll", 1, 0, 0, Targets{522, 502, 512}},
-		{"pitch", 0, 1, 0, Targets{500, 500, 524}},
-		{"heave", 0, 0, 1, Targets{520, 520, 520}},
-		{"axis limits", 100, -100, 100, Targets{572, 522, 507}},
+		{"neutral", 0, 0, 0, Targets{338, 338, 338}},
+		{"roll", 1, 0, 0, Targets{348, 328, 338}},
+		{"pitch", 0, 1, 0, Targets{326, 326, 350}},
+		{"heave", 0, 0, 1, Targets{346, 346, 346}},
+		{"axis limits", 100, -100, 100, Targets{398, 348, 333}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

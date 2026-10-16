@@ -56,6 +56,8 @@ func (p *Port) StopJog() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.diagnostics = false
+	p.guardMask = 0
+	p.soloMotor = 0
 	if !p.jogSupported {
 		return nil
 	}
