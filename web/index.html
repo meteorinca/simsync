@@ -3,370 +3,409 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SimSync - Motion Control</title>
-  <meta name="description" content="Real-time 3DOF motion simulator control, PID tuning, and telemetry dashboard.">
+  <title>SimSync</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/img/favicon-32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="/img/favicon-16.png">
-  <link rel="icon" type="image/png" href="/img/rallycar-tight.png">
   <link rel="shortcut icon" href="/favicon.ico">
-  <link rel="apple-touch-icon" href="/img/rallycar-tight.png">
-  <link rel="stylesheet" href="/css/tokens.css"><link rel="stylesheet" href="/css/app.css">
+  <link rel="stylesheet" href="/css/tokens.css">
+  <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
 
-<!-- E-Stop border flash overlay -->
 <div id="estopOverlay"></div>
 
 <!-- ====== HEADER ====== -->
 <header id="header">
   <div class="logo">SimSync</div>
 
-  <div id="pillSerial" class="pill off"><span class="dot"></span><span class="pill-text">Connecting…</span></div>
-  <div id="pillUDP" class="pill off"><span class="dot"></span><span class="pill-text">Telemetry</span></div>
-  <div id="safetyControls" class="safety-controls">
-    <span id="pillArmed" class="pill warn"><span class="dot"></span><span class="pill-text">Paused</span></span>
-    <button id="armBtn" class="btn primary">Resume</button>
-    <button id="pauseBtn" class="btn" hidden>Pause</button>
-    <button id="clearStopBtn" class="btn" hidden>Clear stop</button>
+  <div class="adc-bar" aria-label="Potentiometer counts">
+    <span class="adc-chip"><span class="adc-pin">A0</span><span id="hdrA0" class="monoval">--</span></span>
+    <span class="adc-chip"><span class="adc-pin">A1</span><span id="hdrA1" class="monoval">--</span></span>
   </div>
 
-  <button id="estopBtn" title="Latch stop (Space or Escape)">STOP</button>
+  <div class="header-right">
+    <div id="pillSerial" class="pill off" title="Serial connection"><span class="dot"></span><span class="pill-text">USB</span></div>
+    <div id="pillUDP" class="pill off" title="Game telemetry"><span class="dot"></span><span class="pill-text">UDP</span></div>
+
+    <div id="safetyControls" class="safety-controls">
+      <span id="pillArmed" class="pill warn"><span class="dot"></span><span class="pill-text">Paused</span></span>
+      <button id="armBtn" class="btn primary" title="Resume PID">▶</button>
+      <button id="pauseBtn" class="btn" title="Pause PID" hidden>⏸</button>
+      <button id="clearStopBtn" class="btn" title="Clear STOP" hidden>↺ Clear</button>
+    </div>
+
+    <button id="estopBtn" title="STOP (Space / Esc)">STOP</button>
+  </div>
 </header>
 
-<nav id="viewTabs" aria-label="Workspace"><div class="workspace-tabs" role="tablist" aria-label="Workspace"><button id="dashboardTab" class="view-tab" role="tab" aria-selected="true" aria-controls="dashboardView" data-view="dashboard">Drive</button><button id="setupTab" class="view-tab" role="tab" aria-selected="false" aria-controls="setupView" data-view="setup">Setup</button><button id="tuningTab" class="view-tab" role="tab" aria-selected="false" aria-controls="tuningView" data-view="tuning">Tune</button><button id="settingsTab" class="view-tab" role="tab" aria-selected="false" aria-controls="settingsView" data-view="settings">Settings</button></div><a class="guide-link" href="/guide.html">Reference</a></nav>
-<!-- ====== MAIN GRID ====== -->
-<main id="workspace"><section id="dashboardView" role="tabpanel" aria-labelledby="dashboardTab"><div id="driveMotor"><div id="tuningMotors" class="tuning-motors" aria-label="Select motor"></div></div><div id="quickJogBar" class="tuning-card">
+<!-- ====== 2-TAB NAV ====== -->
+<nav id="viewTabs" aria-label="Workspace">
+  <div class="workspace-tabs" role="tablist">
+    <button id="dashboardTab" class="view-tab" role="tab" aria-selected="true" aria-controls="dashboardView" data-view="dashboard">Control</button>
+    <button id="settingsTab" class="view-tab" role="tab" aria-selected="false" aria-controls="settingsView" data-view="settings">Settings</button>
+  </div>
+  <div id="motorBar">
+    <div id="tuningMotors" class="tuning-motors" aria-label="Select motor"></div>
+    <button id="motorEnable" class="btn" title="Solo selected motor">Solo M1</button>
+  </div>
+</nav>
+
+<main id="workspace">
+
+  <!-- ====== CONTROL VIEW (Jog + Scope + PID + Limits) ====== -->
+  <section id="dashboardView" role="tabpanel" aria-labelledby="dashboardTab">
+
+    <!-- Quick Jog -->
+    <div id="quickJogBar" class="card compact-card">
       <div class="quick-jog-row">
-        <strong class="quick-jog-title">Quick Jog</strong>
-        <label class="quick-jog-field">PWM <input id="jogPWM" type="number" value="35" min="1" max="100" step="1"></label>
-        <label class="quick-jog-field">ms <input id="jogDuration" type="number" value="200" min="50" max="500" step="10"></label>
+        <span class="section-tag">Jog</span>
         <div class="quick-jog-group">
           <span class="quick-jog-label">M1</span>
-          <button aria-label="Jog M1 backward" id="jogM1Minus" class="btn secondary" data-jog-joint="1" data-jog-dir="-1">◀</button>
+          <button aria-label="Jog M1 backward" id="jogM1Minus" class="btn" data-jog-joint="1" data-jog-dir="-1">◀</button>
           <button aria-label="Jog M1 forward" id="jogM1Plus" class="btn primary" data-jog-joint="1" data-jog-dir="1">▶</button>
         </div>
         <div class="quick-jog-group">
           <span class="quick-jog-label">M2</span>
-          <button aria-label="Jog M2 backward" id="jogM2Minus" class="btn secondary" data-jog-joint="2" data-jog-dir="-1">◀</button>
+          <button aria-label="Jog M2 backward" id="jogM2Minus" class="btn" data-jog-joint="2" data-jog-dir="-1">◀</button>
           <button aria-label="Jog M2 forward" id="jogM2Plus" class="btn primary" data-jog-joint="2" data-jog-dir="1">▶</button>
         </div>
-        <button id="jogStop" class="btn secondary">Stop jog</button>
-      </div>
-      <div class="quick-jog-meta">
+        <label class="quick-jog-field" title="Jog PWM (1-100)">PWM <input id="jogPWM" type="number" value="35" min="1" max="100" step="1"></label>
+        <label class="quick-jog-field" title="Pulse duration (ms)">ms <input id="jogDuration" type="number" value="200" min="50" max="500" step="10"></label>
+        <button id="jogStop" class="btn" title="Stop pulse">■</button>
         <span id="jogStatus" class="control-note"></span>
-        <span id="jogFeedback" class="control-note"></span>
       </div>
+      <span id="jogFeedback" hidden></span>
       <input id="diagnosticsToggle" type="checkbox" hidden>
       <button id="jogMinus" hidden></button>
       <button id="jogPlus" hidden></button>
-    </div><div id="scopePanel">
-      
+    </div>
+
+    <!-- Live Scope -->
+    <div id="scopePanel" class="card">
       <div id="scopeHeader">
-        
-        
-
-        <!-- Joint tabs -->
-        <div class="joint-tabs">
-          
-          
-          
-        </div>
-
-        <!-- Time window -->
         <div class="joint-tabs">
           <button class="tw-btn active" data-s="5">5s</button>
           <button class="tw-btn" data-s="10">10s</button>
           <button class="tw-btn" data-s="30">30s</button>
           <button class="tw-btn" data-s="60">60s</button>
         </div>
-
-        <!-- Trace toggles -->
         <div class="joint-tabs">
-          <button class="tw-btn active" data-trace="target" title="Target position">Target</button>
-          <button class="tw-btn active" data-trace="actual" title="Actual position">Actual</button>
-          <button class="tw-btn" data-trace="error" title="Position error">Error</button>
-          <button class="tw-btn" data-trace="duty" title="Motor duty">PWM</button>
-        </div>
-      </div>
-
-      <div id="scopeTools" hidden>
-        <div class="scope-options">
-          <button class="tw-btn" data-trace="limits" aria-pressed="false">Cutoff</button>
+          <button class="tw-btn active" data-trace="target">Tgt</button>
+          <button class="tw-btn active" data-trace="actual">Act</button>
+          <button class="tw-btn" data-trace="error">Err</button>
+          <button class="tw-btn" data-trace="duty">PWM</button>
+          <button class="tw-btn" data-trace="limits" aria-pressed="false">Cut</button>
           <button class="tw-btn" data-trace="clip" aria-pressed="false">Clip</button>
-          <button class="tw-btn" data-trace="host" aria-pressed="false">Host bounds</button>
-          <label>Scale <select id="scopeScale"><option value="auto">Auto</option><option value="full">Full travel</option></select></label>
+          <button class="tw-btn" data-trace="host" aria-pressed="false">Bounds</button>
         </div>
-        <div class="btn-row"><button id="scopeFreeze" class="btn">Freeze display</button><button id="scopeImage" class="btn">Save image</button></div>
-      <button id="tuningCSV" class="btn">Export CSV</button></div>
-      <canvas id="scopeCanvas" aria-label="Live motor target, feedback, PWM and travel limits"></canvas>
-      <div id="tuningMetrics" hidden><span id="trackingRMS">RMS error -</span><span id="trackingPeak">Peak error -</span><span id="trackingPWM">Peak PWM -</span><span>Last 5s · PWM magnitude / 255</span></div>
+        <div class="joint-tabs">
+          <select id="scopeScale" aria-label="Scope scale"><option value="auto">Auto</option><option value="full">0–1023</option></select>
+          <button id="scopeFreeze" class="btn icon-btn" title="Freeze">❄</button>
+          <button id="scopeImage" class="btn icon-btn" title="Save PNG">📷</button>
+          <button id="tuningCSV" class="btn icon-btn" title="Export CSV">CSV</button>
+        </div>
+      </div>
 
-      <div class="scope-legend">
-        <div class="legend-item"><div class="legend-swatch target"></div>Target</div>
-        <div class="legend-item"><div class="legend-swatch actual"></div>Actual</div>
-        <div class="legend-item"><div class="legend-swatch error"></div>Error</div>
-        <div class="legend-item"><div class="legend-swatch pwm"></div>Duty</div>
-      </div>
-    </div><div id="jointRow">
-      <!-- J1 -->
-      <div class="joint-card">
-        <div class="jc-header"><span>M1 · Front L</span><span id="j1Duty" class="monoval"></span></div>
-        <div id="j1State" class="control-note"></div>
-        <div id="j1Actual" class="jc-actual">--.- counts</div>
-        <div id="j1Target" class="jc-target">TGT --.- counts</div>
-        <div id="j1Err" class="jc-err">ERR --.- counts</div>
-        <div class="duty-bar">
-          <div id="j1DutyFwd" class="duty-fill fwd"></div>
-          <div id="j1DutyRev" class="duty-fill rev"></div>
+      <canvas id="scopeCanvas" aria-label="Live motor scope"></canvas>
+
+      <div id="scopeFooter">
+        <div class="scope-legend">
+          <div class="legend-item"><div class="legend-swatch target"></div>Tgt</div>
+          <div class="legend-item"><div class="legend-swatch actual"></div>Act</div>
+          <div class="legend-item"><div class="legend-swatch error"></div>Err</div>
+          <div class="legend-item"><div class="legend-swatch pwm"></div>PWM</div>
         </div>
-      </div>
-      <!-- J2 -->
-      <div class="joint-card">
-        <div class="jc-header"><span>M2 · Front R</span></div>
-        <div id="j2State" class="control-note"></div>
-        <div id="j2Actual" class="jc-actual">--.- counts</div>
-        <div id="j2Target" class="jc-target">TGT --.- counts</div>
-        <div id="j2Err" class="jc-err">ERR --.- counts</div>
-        <div class="duty-bar">
-          <div id="j2DutyFwd" class="duty-fill fwd"></div>
-          <div id="j2DutyRev" class="duty-fill rev"></div>
-        </div>
-      </div>
-      <!-- J3 -->
-      <div hidden class="joint-card">
-        <div class="jc-header"><span>M3 · Rear</span></div>
-        <div id="j3State" class="control-note"></div>
-        <div id="j3Actual" class="jc-actual">--.- counts</div>
-        <div id="j3Target" class="jc-target">TGT --.- counts</div>
-        <div id="j3Err" class="jc-err">ERR --.- counts</div>
-        <div class="duty-bar">
-          <div id="j3DutyFwd" class="duty-fill fwd"></div>
-          <div id="j3DutyRev" class="duty-fill rev"></div>
-        </div>
-      </div>
-    </div><details class="panel secondary" id="gameTelemetryPanel" open><summary>Game telemetry</summary>
-    <div id="gaugeRow">
-      <div class="gauge-card">
-        <div class="gauge-label">Speed</div>
-        <div id="gSpeed" class="gauge-value cyan">--</div>
-        <div class="gauge-unit">km/h</div>
-      </div>
-      <div class="gauge-card">
-        <div class="gauge-label">G Lateral</div>
-        <div id="gGLat" class="gauge-value amber">--</div>
-        <div class="gauge-unit">g</div>
-      </div>
-      <div class="gauge-card">
-        <div class="gauge-label">G Long</div>
-        <div id="gGLong" class="gauge-value amber">--</div>
-        <div class="gauge-unit">g</div>
-      </div>
-      <div class="gauge-card">
-        <div class="gauge-label">Throttle</div>
-        <div id="gThrottle" class="gauge-value green">--%</div>
-        <div class="input-bar-wrap"><div id="throttleBar" class="input-bar-fill throttle"></div></div>
-      </div>
-      <div class="gauge-card">
-        <div class="gauge-label">Brake</div>
-        <div id="gBrake" class="gauge-value">--%</div>
-        <div class="input-bar-wrap"><div id="brakeBar" class="input-bar-fill brake"></div></div>
-      </div>
-      <div class="gauge-card">
-        <div class="gauge-label">Gear</div>
-        <div id="gGear" class="gauge-value purple">-</div>
-      </div>
-      <div class="gauge-card">
-        <div class="gauge-label">RPM</div>
-        <div id="gRPM" class="gauge-value">--k</div>
-        <div class="gauge-unit">rpm</div>
-      </div>
-      <div class="gauge-card">
-        <div class="gauge-label">Steer</div>
-        <div class="steer-bar-wrap">
-          <div class="steer-bar-center"></div>
-          <div id="steerFill" class="steer-bar-fill"></div>
+        <div id="tuningMetrics">
+          <span id="trackingRMS">RMS -</span>
+          <span id="trackingPeak">Peak -</span>
+          <span id="trackingPWM">PWM -</span>
         </div>
       </div>
     </div>
 
-    </details></section><section id="setupView" role="tabpanel" aria-labelledby="setupTab" hidden><h1>Setup</h1><div class="wizard"><nav aria-label="Setup steps" id="setupSteps"><button class="btn" data-step="1">1. Connect<span id="stepDone1"></span></button><button class="btn" data-step="2">2. Set travel<span id="stepDone2"></span></button><button class="btn" data-step="4">3. Tune<span id="stepDone4"></span></button></nav><div><section id="setupStep1"><h2>1. Connect</h2><aside id="safetyNotice">Support the rig. Keep a power cut-off within reach. <button class="btn" id="dismissSafety">Dismiss</button></aside><div class="btn-row"><label for="serialPort">Serial port</label><select id="serialPort"><option value="">Auto-detect</option></select><button class="btn" id="refreshPorts">Refresh</button><button class="btn primary" id="connectPort">Connect</button></div><label><input type="checkbox" id="benchMode"> Bench mode (no game)</label><p id="controllerInfo" class="control-note"></p></section><section id="setupStep2" hidden><h2>2. Set travel</h2><output id="livePot"></output><svg id="rangeBar" viewBox="0 0 1023 140" role="img" aria-label="Cutoff, clip and host travel bounds" /><p id="rangeValidation" role="status"></p><details class="sidebar-section" id="limitsPanel">
-      <summary>Travel and output limits</summary>
-      <div id="motorState" class="control-note"></div>
-      <label class="control-note"><input id="motorActive" type="checkbox"> Include in output</label>
-      <div class="sweep-grid">
-        <div class="sweep-field"><label for="motorMin">Host min</label><input id="motorMin" value="50" type="number" min="0" max="1023" step="1"></div>
-        <div class="sweep-field"><label for="motorMax">Host max</label><input id="motorMax" value="650" type="number" min="0" max="1023" step="1"></div>
-        <div class="sweep-field"><label for="motorCenter">Center</label><input id="motorCenter" value="338" type="number" min="0" max="1023" step="1"></div>
-        <div class="sweep-field"><label for="pwmMax">PWM max</label><input id="pwmMax" value="100" type="number" min="0" max="255" step="1"></div>
-        <div class="sweep-field"><label for="pwmMin">PWM min</label><input id="pwmMin" value="0" type="number" min="0" max="255" step="1"></div>
-        <div class="sweep-field"><label for="pwmRev">PWM reverse</label><input id="pwmRev" value="50" type="number" min="0" max="255" step="1"></div>
-        <div class="sweep-field"><label for="motorCutoff">Cutoff margin</label><input id="motorCutoff" value="23" type="number" min="1" max="254" step="1"></div>
-        <div class="sweep-field"><label for="motorClip">Clip margin</label><input id="motorClip" value="40" type="number" min="2" max="255" step="1"></div>
-        <div class="sweep-field"><label for="motorDeadzone">Deadzone</label><input id="motorDeadzone" value="0" type="number" min="0" max="255" step="1"></div>
-      </div>
-      <details class="help"><summary aria-label="More information">ⓘ</summary><div><a href="/guide.html">Read reference</a></div></details>
-      <div id="firmwareRange" class="control-note"></div>
-      <div class="btn-row">
-        <button id="captureMin" class="btn">Set min</button>
-        <button id="captureMax" class="btn">Set max</button>
-        <button id="captureCenter" class="btn">Set center</button>
-        <button id="limitsApply" class="btn primary">Apply limits</button>
-        
-      </div>
+    <!-- Main Calibration Grid: PID + Step & Travel Limits -->
+    <div class="tuning-grid">
 
-    </details></section><section id="setupStep4" hidden><h2>3. Tune</h2><button class="btn primary" id="firstTune">Tune motor</button></section><p id="setupPass" role="status"></p><button id="setupNext" class="btn primary">Next</button></div></div></section><section id="tuningView" role="tabpanel" aria-labelledby="tuningTab" hidden><h1>Tune</h1><div id="motorToolbar"><button id="motorEnable" class="btn secondary">Solo</button></div><div id="tuneScope"></div><div class="tuning-grid"><section id="stepCard" class="tuning-card"><h2>1. Step test</h2><details class="sidebar-section" id="stepPanel">
-      
+      <!-- PID & Step Test -->
+      <section id="gainsCard" class="card">
+        <div class="card-head">
+          <h2 id="pidCardTitle">PID</h2>
+          <span id="liveGains" class="monoval control-note"></span>
+          <output id="gainDiff"></output>
+        </div>
 
-      <div>
-        
-        <label for="stepSize">Step</label>
-        <input aria-label="Step size in counts" id="stepSize" type="number" value="8" step="4" min="-40" max="40">
-        <span id="stepUnit">counts</span>
-      </div>
-
-      <div class="btn-row">
-        <button id="stepTestBtn" class="btn primary">Step +</button>
-        <button id="testCancel" class="btn secondary">Cancel test</button>
-      </div>
-
-    <button id="testNegative" class="btn primary">Step −</button></details><p id="tuningAdvice" aria-live="polite">Run a small step to measure this motor.</p><div id="responseComparison" class="control-note"></div><button id="stepMinus5" class="btn secondary">Nudge −5</button><button id="stepPlus5" class="btn primary">Nudge +5</button></section><section id="gainsCard" class="tuning-card"><h2>2. Gains</h2><output id="gainDiff"></output><div class="sidebar-section" id="pidPanel">
-      
-      <div id="liveGains" class="control-note"></div>
-
-      <div class="pid-row">
-        <span class="pid-label">Kp</span>
-        <input aria-label="Proportional gain slider" id="kpSlider" class="pid-slider" type="range" min="0.1" max="30" step="0.1" value="20">
-        <input aria-label="Proportional gain" id="kpNum" class="pid-num" type="number" min="0.1" max="30" step="0.1" value="20.00">
-      </div>
-      <div class="pid-row">
-        <span class="pid-label">Ki</span>
-        <input aria-label="Integral gain slider" id="kiSlider" class="pid-slider ki" type="range" min="0" max="2" step="0.01" value="0">
-        <input aria-label="Integral gain" id="kiNum" class="pid-num" type="number" min="0" max="2" step="0.01" value="0.00">
-      </div>
-      <div class="pid-row">
-        <span class="pid-label">Kd</span>
-        <input aria-label="Derivative gain slider" id="kdSlider" class="pid-slider kd" type="range" min="0" max="5" step="0.05" value="0.4">
-        <input aria-label="Derivative gain" id="kdNum" class="pid-num" type="number" min="0" max="5" step="0.05" value="0.40">
-      </div>
-
-      <div class="btn-row">
-        <button id="pidSendBtn" class="btn primary">Apply</button>
-        <button id="pidReadBtn" class="btn">Revert</button>
-        
-        
-        
-      </div>
-    <button id="stageMeasured" class="btn">Use best</button><button id="saveTune" class="btn">Save tune</button></div></section></div><section id="historyCard" class="tuning-card"><span hidden class="running-indicator" id="testRunning"></span><h2>3. History</h2><details class="panel secondary" id="testResultsPanel">
-      <div class="table-scroll">
-        <table id="resultsTable">
-          <thead>
-            <tr>
-              <th>Motor</th><th>Kp / Kd</th><th>Rise</th><th>Overshoot</th><th>Settle</th><th>Error</th>
-            </tr>
-          </thead>
-          <tbody id="resultsBody">
-            <tr><td colspan="6">No step tests yet</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="btn-row">
-        
-      </div>
-    </details></section><details id="tuneLimits"><summary>Limits</summary></details><details id="signalCard"><summary>Signal test</summary><div class="tuning-card">
-          <div class="panel-title">Output mode</div>
-          <div id="signalState" class="control-note">Monitor · no generated targets</div>
-          <div class="sweep-grid">
-            <div class="sweep-field"><label for="signalMode">Test signal</label><select id="signalMode"><option value="sine">Sine</option><option value="triangle">Triangle</option><option value="square">Square</option></select></div>
-            <div class="sweep-field"><label for="signalAmplitude">Amplitude (± counts)</label><input id="signalAmplitude" type="number" min="1" max="20" step="1" value="8"></div>
-            <div class="sweep-field"><label for="signalPeriod">Period (seconds)</label><input id="signalPeriod" type="number" min="0.5" max="3" step="0.1" value="1.5"></div>
+        <div id="pidPanel">
+          <div class="pid-row">
+            <span class="pid-label">Kp</span>
+            <input aria-label="Kp slider" id="kpSlider" class="pid-slider" type="range" min="0.1" max="30" step="0.1" value="20">
+            <input aria-label="Kp" id="kpNum" class="pid-num" type="number" min="0.1" max="30" step="0.1" value="20.00">
           </div>
-          <details class="help"><summary aria-label="More information">ⓘ</summary><div><a href="/guide.html">Read reference</a></div></details>
-          <div class="btn-row"><button id="signalStart" class="btn primary">Run signal</button></div>
-          <div id="tuningStep"></div>
-        </div></details></section><section id="settingsView" role="tabpanel" aria-labelledby="settingsTab" hidden><h1>Settings</h1><div id="settingsMotor"></div><div id="settingsBasics" class="tuning-grid"><details class="sidebar-section" id="mappingPanel">
-      <summary>Motion mapping</summary>
-
-      <div class="mcfg-row">
-        <span class="mcfg-label">Pitch gain</span>
-        <input aria-label="Pitch Gain" id="pitchGain" class="mcfg-slider" type="range" min="0" max="30" step="0.5" value="12">
-        <span id="pitchGainVal" class="mcfg-val">12.0</span>
-      </div>
-      <div class="mcfg-row">
-        <span class="mcfg-label">Roll gain</span>
-        <input aria-label="Roll Gain" id="rollGain" class="mcfg-slider" type="range" min="0" max="30" step="0.5" value="10">
-        <span id="rollGainVal" class="mcfg-val">10.0</span>
-      </div>
-      <div class="mcfg-row">
-        <span class="mcfg-label">Heave gain</span>
-        <input aria-label="Heave Gain" id="heaveGain" class="mcfg-slider" type="range" min="0" max="20" step="0.5" value="8">
-        <span id="heaveGainVal" class="mcfg-val">8.0</span>
-      </div>
-      <div class="mcfg-row">
-        <span class="mcfg-label">Filter Hz</span>
-        <input aria-label="Filter Hz" id="filterHz" class="mcfg-slider" type="range" min="1" max="50" step="1" value="15">
-        <span id="filterHzVal" class="mcfg-val">15.0</span>
-      </div>
-
-      <button id="motionSendBtn" class="btn primary">Apply</button>
-    </details><details class="sidebar-section" id="displayPanel">
-      <summary>Display range</summary>
-      <div class="sweep-grid">
-        <div class="sweep-field"><label for="angleMinCount">Pot min count</label><input id="angleMinCount" type="number" min="0" max="1022" step="1" value="8"></div>
-        <div class="sweep-field"><label for="angleMaxCount">Pot max count</label><input id="angleMaxCount" type="number" min="1" max="1023" step="1" value="668"></div>
-        <div class="sweep-field"><label for="angleMinDegrees">Angle at min (°)</label><input id="angleMinDegrees" type="number" step="0.1" value="0"></div>
-        <div class="sweep-field"><label for="angleMaxDegrees">Angle at max (°)</label><input id="angleMaxDegrees" type="number" step="0.1" value="270"></div>
-      </div>
-      <div class="btn-row"><button id="angleApply" class="btn primary">Apply display range</button><button id="angleReset" class="btn">Use defaults</button></div>
-      <div id="angleStatus" class="control-note"></div>
-      <details class="help"><summary aria-label="More information">ⓘ</summary><div><a href="/guide.html">Read reference</a></div></details>
-    <select aria-label="Display units" id="displayUnit"><option value="counts">Counts</option><option value="degrees">Approx. degrees</option><option value="percent">Range %</option></select><p>Display only. Doesn't limit travel.</p></details></div><details id="advanced"><summary>Advanced</summary><div id="advancedCards" class="tuning-grid"><button id="stablePreset" class="btn secondary" title="Fills the gain fields; Apply Gains sends them">P20 / D0.4</button><button id="pdBtn" class="btn">Ki = 0</button><div class="tuning-card">
-          <div class="panel-title" id="filterTitle">Selected motor · feedback filters</div>
-          <div id="filterReadback" class="control-note"></div>
-          <div class="sweep-grid">
-            <div class="sweep-field"><label for="filterLPF">Feedback LPF (Hz · 0 = off)</label><input id="filterLPF" type="number" min="0" max="200" step="0.1" value="0"></div>
-            <div class="sweep-field"><label for="filterHPF">Derivative HPF (Hz · 0 = off)</label><input id="filterHPF" type="number" min="0" max="50" step="0.1" value="0"></div>
+          <div class="pid-row">
+            <span class="pid-label">Ki</span>
+            <input aria-label="Ki slider" id="kiSlider" class="pid-slider ki" type="range" min="0" max="2" step="0.01" value="0">
+            <input aria-label="Ki" id="kiNum" class="pid-num" type="number" min="0" max="2" step="0.01" value="0.00">
           </div>
-          <details class="help"><summary aria-label="More information">ⓘ</summary><div><a href="/guide.html">Read reference</a></div></details>
-          <div class="btn-row"><button id="filterApply" class="btn primary">Apply filters</button><button id="filterRead" class="btn">Revert</button></div>
-          <details class="help"><summary aria-label="More information">ⓘ</summary><div><a href="/guide.html">Read reference</a></div></details>
-        </div><div class="tuning-card">
-          <div class="panel-title">Loop timing &amp; derivative filter</div>
-          <div id="timingReadback" class="control-note"></div>
-          <div class="sweep-grid">
-            <div class="sweep-field"><label for="tuningKs">Ks · derivative samples</label><input id="tuningKs" type="number" min="1" max="100" step="1" value="1"></div>
-            <div class="sweep-field"><label for="tuningDivider">Fpid · divider</label><input id="tuningDivider" type="number" min="1" max="10" step="1" value="1"></div>
-            <div class="sweep-field"><label for="tuningPWM12">Fpwm · M1 + M2 (kHz)</label><input id="tuningPWM12" type="number" min="5" max="35" step="1" value="25"></div>
-            <div hidden class="sweep-field"><label for="tuningPWM3">Fpwm · M3</label><select id="tuningPWM3"><option value="31">31.25 kHz</option><option value="4">3.906 kHz</option></select></div>
+          <div class="pid-row">
+            <span class="pid-label">Kd</span>
+            <input aria-label="Kd slider" id="kdSlider" class="pid-slider kd" type="range" min="0" max="5" step="0.05" value="0.4">
+            <input aria-label="Kd" id="kdNum" class="pid-num" type="number" min="0" max="5" step="0.05" value="0.40">
           </div>
-          <p class="control-note">Ks filters the derivative term. Fpid and PWM timers are shared controller settings; M1 and M2 share one PWM timer.</p>
-          <div class="btn-row"><button id="timingApply" class="btn primary">Apply timing</button><button id="timingRead" class="btn">Read</button></div>
-        </div><details id="directionTools"><summary>Direction and jog</summary><section id="setupStep3"><output id="feedbackDirection"></output><label><input type="checkbox" id="directionConfirmed"> Feedback moved the same way</label><div class="sidebar-section" id="positionPanel">
-      <div class="panel-title">Position <span id="positionUnit">counts</span></div>
-      <div>
-        
-        <input aria-label="Target in counts" id="manPosition" type="number" value="338" step="1" min="0" max="1023">
-        <button id="manGoBtn" class="btn primary">Go</button>
+
+          <div class="btn-row">
+            <button id="pidSendBtn" class="btn primary">Apply</button>
+            <button id="pidReadBtn" class="btn" title="Revert to live">↺</button>
+            <button id="stablePreset" class="btn" title="Stage P20/I0/D0.4">P20/D0.4</button>
+            <button id="pdBtn" class="btn" title="Zero Ki">I=0</button>
+            <button id="pidSaveBtn" class="btn" title="Save to Arduino EEPROM">EEPROM</button>
+          </div>
+        </div>
+
+        <hr class="divider">
+
+        <!-- Step & Nudge -->
+        <div class="step-row">
+          <span class="section-tag">Step</span>
+          <input aria-label="Step counts" id="stepSize" type="number" value="8" step="4" min="1" max="40" class="compact-num">
+          <button id="testNegative" class="btn primary" title="Step minus">−Step</button>
+          <button id="stepTestBtn" class="btn primary" title="Step plus">+Step</button>
+          <button id="testCancel" class="btn" title="Cancel test">✕</button>
+          <span class="sep">|</span>
+          <button id="stepMinus5" class="btn" title="Nudge -5">−5</button>
+          <button id="stepPlus5" class="btn" title="Nudge +5">+5</button>
+          <button id="centerBtn" class="btn" title="Move to center">◎</button>
+          <span hidden class="running-indicator" id="testRunning"></span>
+        </div>
+
+        <div class="step-row">
+          <span class="section-tag">Go</span>
+          <input aria-label="Target count" id="manPosition" type="number" value="338" step="1" min="0" max="1023" class="compact-num">
+          <button id="manGoBtn" class="btn">Go</button>
+          <button id="stepMinus10" class="btn">−10</button>
+          <button id="stepPlus10" class="btn">+10</button>
+          <button id="stageMeasured" class="btn" title="Load best step gains">Best</button>
+          <span id="tuningAdvice" aria-live="polite"></span>
+        </div>
+        <div id="responseComparison" class="control-note"></div>
+      </section>
+
+      <!-- Travel & Output Limits -->
+      <section id="limitsCard" class="card">
+        <div class="card-head">
+          <h2>Limits</h2>
+          <span id="motorState" class="control-note"></span>
+          <label class="inline-check"><input id="motorActive" type="checkbox"> Active</label>
+        </div>
+
+        <svg id="rangeBar" viewBox="0 0 1023 110" role="img" aria-label="Travel bounds"></svg>
+        <div class="limits-meta">
+          <span id="rangeValidation" role="status"></span>
+          <span id="firmwareRange" class="control-note"></span>
+        </div>
+
+        <div class="sweep-grid">
+          <div class="sweep-field"><label for="motorMin">Min</label><input id="motorMin" value="50" type="number" min="0" max="1023" step="1"></div>
+          <div class="sweep-field"><label for="motorMax">Max</label><input id="motorMax" value="650" type="number" min="0" max="1023" step="1"></div>
+          <div class="sweep-field"><label for="motorCenter">Center</label><input id="motorCenter" value="338" type="number" min="0" max="1023" step="1"></div>
+          <div class="sweep-field"><label for="pwmMax">PWM max</label><input id="pwmMax" value="100" type="number" min="0" max="255" step="1"></div>
+          <div class="sweep-field"><label for="pwmMin">PWM min</label><input id="pwmMin" value="0" type="number" min="0" max="255" step="1"></div>
+          <div class="sweep-field"><label for="pwmRev">PWM rev</label><input id="pwmRev" value="50" type="number" min="0" max="255" step="1"></div>
+          <div class="sweep-field"><label for="motorCutoff">Cutoff</label><input id="motorCutoff" value="23" type="number" min="1" max="254" step="1"></div>
+          <div class="sweep-field"><label for="motorClip">Clip</label><input id="motorClip" value="40" type="number" min="2" max="255" step="1"></div>
+          <div class="sweep-field"><label for="motorDeadzone">Deadzone</label><input id="motorDeadzone" value="0" type="number" min="0" max="255" step="1"></div>
+        </div>
+
+        <div class="btn-row">
+          <button id="captureMin" class="btn" title="Capture current position as Min">Set min</button>
+          <button id="captureMax" class="btn" title="Capture current position as Max">Set max</button>
+          <button id="captureCenter" class="btn" title="Capture current position as Center">Set ctr</button>
+          <button id="limitsApply" class="btn primary">Apply</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Compact Motor Cards -->
+    <div id="jointRow">
+      <div class="joint-card" data-select-joint="1">
+        <div class="jc-header"><strong>M1 · A0</strong><span id="j1State" class="control-note"></span></div>
+        <div class="jc-nums">
+          <span id="j1Actual" class="jc-actual">--</span>
+          <span id="j1Target" class="jc-target">T --</span>
+          <span id="j1Err" class="jc-err">E --</span>
+        </div>
+        <div class="duty-bar"><div id="j1DutyFwd" class="duty-fill fwd"></div><div id="j1DutyRev" class="duty-fill rev"></div></div>
       </div>
-      <div class="btn-row">
-        <button id="stepMinus10" class="btn secondary">-10 counts</button>
-        
-        
-        <button id="stepPlus10" class="btn primary">+10 counts</button>
-        <button id="centerBtn" class="btn secondary">Center</button>
+      <div class="joint-card" data-select-joint="2">
+        <div class="jc-header"><strong>M2 · A1</strong><span id="j2State" class="control-note"></span></div>
+        <div class="jc-nums">
+          <span id="j2Actual" class="jc-actual">--</span>
+          <span id="j2Target" class="jc-target">T --</span>
+          <span id="j2Err" class="jc-err">E --</span>
+        </div>
+        <div class="duty-bar"><div id="j2DutyFwd" class="duty-fill fwd"></div><div id="j2DutyRev" class="duty-fill rev"></div></div>
       </div>
-    </div></section></details></div></details><section id="storage" class="tuning-card"><h2>Saved settings</h2><div id="profileControls" class="btn-row"></div><button id="pidSaveBtn" class="btn secondary" title="Saves firmware values to Arduino EEPROM; UI Apply also saves the host Markdown settings">Save EEPROM</button><div id="settingsFile" class="control-note">Applied tuning is saved automatically.</div></section></section><div id="commandStatus" role="status" class="control-note"></div><div id="statusBar">
-    <span id="sbSerial" class="monoval">USB --</span>
-    <span class="sep">|</span>
-    <span id="sbUDP" class="monoval">UDP --</span>
-    <span class="sep">|</span>
-    <span id="sbSession" class="monoval">SAMPLES 0</span>
-    <span class="sep">|</span>
-    <span id="sbEStop">Host motion paused</span>
-  </div></main><!-- /app -->
+      <div hidden class="joint-card" data-select-joint="3">
+        <div class="jc-header"><strong>M3 · A2</strong><span id="j3State" class="control-note"></span></div>
+        <div class="jc-nums">
+          <span id="j3Actual" class="jc-actual">--</span>
+          <span id="j3Target" class="jc-target">T --</span>
+          <span id="j3Err" class="jc-err">E --</span>
+        </div>
+        <div class="duty-bar"><div id="j3DutyFwd" class="duty-fill fwd"></div><div id="j3DutyRev" class="duty-fill rev"></div></div>
+      </div>
+    </div>
+
+    <!-- Collapsible Extras -->
+    <div class="extras-row">
+      <details id="historyPanel">
+        <summary>Step history</summary>
+        <div class="table-scroll">
+          <table id="resultsTable">
+            <thead><tr><th>M</th><th>Kp/Kd</th><th>Rise</th><th>OS</th><th>Settle</th><th>Err</th></tr></thead>
+            <tbody id="resultsBody"><tr><td colspan="6">None</td></tr></tbody>
+          </table>
+        </div>
+      </details>
+
+      <details id="signalCard">
+        <summary>Signal test</summary>
+        <div class="sweep-grid">
+          <div class="sweep-field"><label for="signalMode">Wave</label><select id="signalMode"><option value="sine">Sine</option><option value="triangle">Triangle</option><option value="square">Square</option></select></div>
+          <div class="sweep-field"><label for="signalAmplitude">Amp (±)</label><input id="signalAmplitude" type="number" min="1" max="20" step="1" value="8"></div>
+          <div class="sweep-field"><label for="signalPeriod">Period (s)</label><input id="signalPeriod" type="number" min="0.5" max="3" step="0.1" value="1.5"></div>
+        </div>
+        <div class="btn-row">
+          <button id="signalStart" class="btn primary">Run</button>
+          <span id="signalState" class="control-note"></span>
+        </div>
+      </details>
+
+      <details id="gameTelemetryPanel">
+        <summary>Telemetry</summary>
+        <div id="gaugeRow">
+          <div class="gauge-card"><div class="gauge-label">km/h</div><div id="gSpeed" class="gauge-value">--</div></div>
+          <div class="gauge-card"><div class="gauge-label">G Lat</div><div id="gGLat" class="gauge-value">--</div></div>
+          <div class="gauge-card"><div class="gauge-label">G Long</div><div id="gGLong" class="gauge-value">--</div></div>
+          <div class="gauge-card"><div class="gauge-label">Thr</div><div id="gThrottle" class="gauge-value">--%</div><div class="input-bar-wrap"><div id="throttleBar" class="input-bar-fill throttle"></div></div></div>
+          <div class="gauge-card"><div class="gauge-label">Brk</div><div id="gBrake" class="gauge-value">--%</div><div class="input-bar-wrap"><div id="brakeBar" class="input-bar-fill brake"></div></div></div>
+          <div class="gauge-card"><div class="gauge-label">Gear</div><div id="gGear" class="gauge-value">-</div></div>
+          <div class="gauge-card"><div class="gauge-label">RPM</div><div id="gRPM" class="gauge-value">--</div></div>
+          <div class="gauge-card"><div class="gauge-label">Steer</div><div class="steer-bar-wrap"><div class="steer-bar-center"></div><div id="steerFill" class="steer-bar-fill"></div></div></div>
+        </div>
+      </details>
+    </div>
+
+  </section>
+
+  <!-- ====== SETTINGS VIEW ====== -->
+  <section id="settingsView" role="tabpanel" aria-labelledby="settingsTab" hidden>
+    <div class="tuning-grid">
+
+      <!-- Connection -->
+      <section class="card">
+        <h2>Connection</h2>
+        <div class="btn-row">
+          <select id="serialPort" aria-label="Serial port"><option value="">Auto</option></select>
+          <button id="refreshPorts" class="btn" title="Refresh ports">↻</button>
+          <button id="connectPort" class="btn primary">Connect</button>
+        </div>
+        <div class="btn-row">
+          <label class="inline-check"><input type="checkbox" id="benchMode"> Bench (no UDP)</label>
+          <span id="controllerInfo" class="control-note"></span>
+        </div>
+      </section>
+
+      <!-- Motion Mapping -->
+      <section class="card" id="mappingPanel">
+        <h2>Motion</h2>
+        <div class="mcfg-row"><span class="mcfg-label">Pitch</span><input aria-label="Pitch" id="pitchGain" type="range" min="0" max="30" step="0.5" value="12"><span id="pitchGainVal" class="monoval">12.0</span></div>
+        <div class="mcfg-row"><span class="mcfg-label">Roll</span><input aria-label="Roll" id="rollGain" type="range" min="0" max="30" step="0.5" value="10"><span id="rollGainVal" class="monoval">10.0</span></div>
+        <div class="mcfg-row"><span class="mcfg-label">Heave</span><input aria-label="Heave" id="heaveGain" type="range" min="0" max="20" step="0.5" value="8"><span id="heaveGainVal" class="monoval">8.0</span></div>
+        <div class="mcfg-row"><span class="mcfg-label">Filter Hz</span><input aria-label="Filter Hz" id="filterHz" type="range" min="1" max="50" step="1" value="15"><span id="filterHzVal" class="monoval">15.0</span></div>
+        <div class="btn-row"><button id="motionSendBtn" class="btn primary">Apply</button></div>
+      </section>
+
+      <!-- Filters -->
+      <section class="card">
+        <div class="card-head">
+          <h2 id="filterTitle">Filters</h2>
+          <span id="filterReadback" class="control-note"></span>
+        </div>
+        <div class="sweep-grid two-col">
+          <div class="sweep-field"><label for="filterLPF">LPF Hz (0=off)</label><input id="filterLPF" type="number" min="0" max="200" step="0.1" value="0"></div>
+          <div class="sweep-field"><label for="filterHPF">D-HPF Hz (0=off)</label><input id="filterHPF" type="number" min="0" max="50" step="0.1" value="0"></div>
+        </div>
+        <div class="btn-row">
+          <button id="filterApply" class="btn primary">Apply</button>
+          <button id="filterRead" class="btn">↺</button>
+        </div>
+      </section>
+
+      <!-- Timing -->
+      <section class="card">
+        <div class="card-head">
+          <h2>Timing &amp; PWM</h2>
+          <span id="timingReadback" class="control-note"></span>
+        </div>
+        <div class="sweep-grid">
+          <div class="sweep-field"><label for="tuningKs">Ks</label><input id="tuningKs" type="number" min="1" max="100" step="1" value="1"></div>
+          <div class="sweep-field"><label for="tuningDivider">Fpid div</label><input id="tuningDivider" type="number" min="1" max="10" step="1" value="1"></div>
+          <div class="sweep-field"><label for="tuningPWM12">M2 kHz</label><input id="tuningPWM12" type="number" min="5" max="35" step="1" value="8"></div>
+          <div hidden class="sweep-field"><label for="tuningPWM3">M3 kHz</label><select id="tuningPWM3"><option value="31">31</option><option value="4">4</option></select></div>
+        </div>
+        <div class="btn-row">
+          <button id="timingApply" class="btn primary">Apply</button>
+          <button id="timingRead" class="btn">↺</button>
+        </div>
+      </section>
+
+      <!-- Display Units -->
+      <section class="card" id="displayPanel">
+        <div class="card-head">
+          <h2>Display</h2>
+          <select aria-label="Units" id="displayUnit"><option value="counts">Counts</option><option value="degrees">Degrees</option><option value="percent">%</option></select>
+        </div>
+        <div class="sweep-grid two-col">
+          <div class="sweep-field"><label for="angleMinCount">Min cnt</label><input id="angleMinCount" type="number" min="0" max="1022" step="1" value="8"></div>
+          <div class="sweep-field"><label for="angleMaxCount">Max cnt</label><input id="angleMaxCount" type="number" min="1" max="1023" step="1" value="668"></div>
+          <div class="sweep-field"><label for="angleMinDegrees">Min °</label><input id="angleMinDegrees" type="number" step="0.1" value="0"></div>
+          <div class="sweep-field"><label for="angleMaxDegrees">Max °</label><input id="angleMaxDegrees" type="number" step="0.1" value="270"></div>
+        </div>
+        <div class="btn-row">
+          <button id="angleApply" class="btn primary">Apply</button>
+          <button id="angleReset" class="btn">Reset</button>
+        </div>
+        <div id="angleStatus" class="control-note"></div>
+      </section>
+
+      <!-- Profiles -->
+      <section class="card" id="storage">
+        <h2>Profiles</h2>
+        <div id="profileControls" class="btn-row"></div>
+        <div id="settingsFile" class="control-note"></div>
+      </section>
+
+    </div>
+  </section>
+
+  <!-- Compact Footer -->
+  <div id="statusBar">
+    <span id="commandStatus" role="status"></span>
+    <span class="sb-right">
+      <span id="sbSerial" class="monoval">USB --</span>
+      <span class="sep">|</span>
+      <span id="sbUDP" class="monoval">UDP --</span>
+      <span class="sep">|</span>
+      <span id="sbSession" class="monoval">0</span>
+      <span class="sep">|</span>
+      <span id="sbEStop">Paused</span>
+    </span>
+  </div>
+</main>
 
 <script src="/js/angles.js"></script>
 <script src="/js/plots.js"></script>
 <script src="/js/app.js"></script>
 <script src="/js/tuning.js"></script>
-<script src="/js/setup.js"></script></body>
+<script src="/js/setup.js"></script>
+</body>
 </html>

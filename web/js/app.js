@@ -24,6 +24,9 @@
     steerFill: $('steerFill'),
 
 
+    // Header A0 / A1 live counts
+    hdrA0: $('hdrA0'), hdrA1: $('hdrA1'),
+
     // Joint cards
     j1Actual: $('j1Actual'), j1Target: $('j1Target'), j1Err: $('j1Err'),
     j2Actual: $('j2Actual'), j2Target: $('j2Target'), j2Err: $('j2Err'),
@@ -119,11 +122,11 @@
 
   /* ---- pills ---- */
   function updatePills(f) {
-    setPill(els.pillSerial, f.serial_ok, 'Serial', f.serial_ok ? 'Connected' : 'Connecting…');
-    setPill(els.pillUDP, f.udp_hz > 5, 'Telemetry', f.udp_hz > 5 ? f.udp_hz.toFixed(0) + 'Hz' : 'OFF');
+    setPill(els.pillSerial, f.serial_ok, 'USB', f.serial_ok ? 'OK' : '…');
+    setPill(els.pillUDP, f.udp_hz > 5, 'UDP', f.udp_hz > 5 ? f.udp_hz.toFixed(0) + 'Hz' : 'OFF');
     var solo=motors.findIndex(function(m){return m.solo;});
     var diag=motors.some(function(m){return m.diagnostics;});
-    setPill(els.pillArmed, f.armed, f.estop?'Stopped':f.armed?(solo>=0?'Solo · M'+(solo+1):'Running'):diag?'Jog':'Paused', null, f.estop?'warn':f.armed?'ok':'warn');
+    setPill(els.pillArmed, f.armed, f.estop?'STOP':f.armed?(solo>=0?'Solo M'+(solo+1):'ON'):diag?'Jog':'Paused', null, f.estop?'warn':f.armed?'ok':'warn');
     if (els.armBtn) els.armBtn.hidden = !!(f.estop || f.armed);
     if (els.disarmBtn) els.disarmBtn.hidden = !!(f.estop || !f.armed);
     if (els.estopClearBtn) els.estopClearBtn.hidden = !f.estop;
@@ -177,6 +180,8 @@
 
   function updateJoints(f) {
     if (!f.joints) return;
+    if (els.hdrA0 && f.joints[0]) setText(els.hdrA0, Math.round(f.joints[0].actual));
+    if (els.hdrA1 && f.joints[1]) setText(els.hdrA1, Math.round(f.joints[1].actual));
     f.joints.forEach(function (j, i) {
       if (!j) return;
       var e = jEls[i];
@@ -185,8 +190,8 @@
       e.actual.title = j.actual + ' counts';
       e.target.title = j.target + ' counts';
       e.err.title = j.error + ' counts';
-      setText(e.target, 'TGT ' + Angles.format(i+1, j.target));
-      setText(e.err,    'ERR ' + Angles.format(i+1, j.error, true));
+      setText(e.target, 'T ' + Angles.format(i+1, j.target));
+      setText(e.err,    'E ' + Angles.format(i+1, j.error, true));
       setDutyBar(e.fwd, e.rev, j.duty || 0);
     });
   }
@@ -482,10 +487,17 @@
     currentJoint = j; loadedJoint = 0;
 
     els.jointTabs.forEach(function (t) { t.classList.toggle('active', Number(t.dataset.joint) === j); });
+    document.querySelectorAll('[data-select-joint]').forEach(function (card) {
+      card.classList.toggle('selected', Number(card.dataset.selectJoint) === j);
+    });
+    if ($('pidCardTitle')) $('pidCardTitle').textContent = 'M' + j + ' PID';
     if (window.Scope) Scope.setJoint(j);
     loadMotor();
     refreshAngles();
   }
+  document.querySelectorAll('[data-select-joint]').forEach(function (card) {
+    card.addEventListener('click', function () { selectMotor(Number(card.dataset.selectJoint)); });
+  });
   $('pidReadBtn').addEventListener('click', loadMotor);
   $('pdBtn').addEventListener('click', function () { setSliderAndNum(els.kiSlider, els.kiNum, 0); });
   $('captureCenter').addEventListener('click', function () {
@@ -555,7 +567,7 @@
     });
     $('jogStop').disabled = !live || !m || !m.jog_supported;
     $('jogStatus').style.color = '';
-    $('jogStatus').textContent = !m || !m.ready ? 'Waiting for controller…' : !m.jog_supported ? 'Firmware update required' : latestFrame.estop ? 'Clear STOP to jog' : jogging ? 'Pulse running…' : '1-click jog ready (auto-pauses PID) · PWM cap ' + m.pwm_max + '/255';
+    $('jogStatus').textContent = !m || !m.ready ? '' : !m.jog_supported ? 'Update FW' : latestFrame.estop ? 'STOP latched' : jogging ? 'Jogging…' : '';
     var solo = motors.some(function (motor) { return motor.solo; });
     var move = live && m && m.ready && m.configured && m.active && !m.disabled && latestFrame.armed && !testBusy && (!solo || m.solo);
     [els.manGoBtn, els.centerBtn, els.stepMinus5, els.stepPlus5, els.stepMinus10, els.stepPlus10, els.stepTestBtn].forEach(function (b) { b.disabled = !move; });
