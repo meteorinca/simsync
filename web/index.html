@@ -23,14 +23,43 @@
 
   <div id="pillSerial" class="pill off"><span class="dot"></span><span class="pill-text">Connecting…</span></div>
   <div id="pillUDP" class="pill off"><span class="dot"></span><span class="pill-text">Telemetry</span></div>
-  <details id="safetyMenu"><summary id="pillArmed" class="pill warn"><span class="pill-text">Paused</span></summary><div class="safety-actions"><button id="armBtn" class="btn primary">Resume</button><button id="pauseBtn" class="btn">Pause</button><button id="clearStopBtn" class="btn">Clear stop</button></div></details>
+  <div id="safetyControls" class="safety-controls">
+    <span id="pillArmed" class="pill warn"><span class="dot"></span><span class="pill-text">Paused</span></span>
+    <button id="armBtn" class="btn primary">Resume</button>
+    <button id="pauseBtn" class="btn" hidden>Pause</button>
+    <button id="clearStopBtn" class="btn" hidden>Clear stop</button>
+  </div>
 
   <button id="estopBtn" title="Latch stop (Space or Escape)">STOP</button>
 </header>
 
 <nav id="viewTabs" aria-label="Workspace"><div class="workspace-tabs" role="tablist" aria-label="Workspace"><button id="dashboardTab" class="view-tab" role="tab" aria-selected="true" aria-controls="dashboardView" data-view="dashboard">Drive</button><button id="setupTab" class="view-tab" role="tab" aria-selected="false" aria-controls="setupView" data-view="setup">Setup</button><button id="tuningTab" class="view-tab" role="tab" aria-selected="false" aria-controls="tuningView" data-view="tuning">Tune</button><button id="settingsTab" class="view-tab" role="tab" aria-selected="false" aria-controls="settingsView" data-view="settings">Settings</button></div><a class="guide-link" href="/guide.html">Reference</a></nav>
 <!-- ====== MAIN GRID ====== -->
-<main id="workspace"><section id="dashboardView" role="tabpanel" aria-labelledby="dashboardTab"><div id="driveMotor"><div id="tuningMotors" class="tuning-motors" aria-label="Select motor"></div></div><div id="scopePanel">
+<main id="workspace"><section id="dashboardView" role="tabpanel" aria-labelledby="dashboardTab"><div id="driveMotor"><div id="tuningMotors" class="tuning-motors" aria-label="Select motor"></div></div><div id="quickJogBar" class="tuning-card">
+      <div class="quick-jog-row">
+        <strong class="quick-jog-title">Quick Jog</strong>
+        <label class="quick-jog-field">PWM <input id="jogPWM" type="number" value="35" min="1" max="100" step="1"></label>
+        <label class="quick-jog-field">ms <input id="jogDuration" type="number" value="200" min="50" max="500" step="10"></label>
+        <div class="quick-jog-group">
+          <span class="quick-jog-label">M1</span>
+          <button aria-label="Jog M1 backward" id="jogM1Minus" class="btn secondary" data-jog-joint="1" data-jog-dir="-1">◀</button>
+          <button aria-label="Jog M1 forward" id="jogM1Plus" class="btn primary" data-jog-joint="1" data-jog-dir="1">▶</button>
+        </div>
+        <div class="quick-jog-group">
+          <span class="quick-jog-label">M2</span>
+          <button aria-label="Jog M2 backward" id="jogM2Minus" class="btn secondary" data-jog-joint="2" data-jog-dir="-1">◀</button>
+          <button aria-label="Jog M2 forward" id="jogM2Plus" class="btn primary" data-jog-joint="2" data-jog-dir="1">▶</button>
+        </div>
+        <button id="jogStop" class="btn secondary">Stop jog</button>
+      </div>
+      <div class="quick-jog-meta">
+        <span id="jogStatus" class="control-note"></span>
+        <span id="jogFeedback" class="control-note"></span>
+      </div>
+      <input id="diagnosticsToggle" type="checkbox" hidden>
+      <button id="jogMinus" hidden></button>
+      <button id="jogPlus" hidden></button>
+    </div><div id="scopePanel">
       
       <div id="scopeHeader">
         
@@ -325,23 +354,7 @@
         <button id="stepPlus10" class="btn primary">+10 counts</button>
         <button id="centerBtn" class="btn secondary">Center</button>
       </div>
-    </div><details class="sidebar-section" id="jogPanel">
-      <summary>Jog</summary>
-      <label class="control-note"><input id="diagnosticsToggle" type="checkbox"> Enable jog · pauses PID &amp; game output</label>
-      <div class="sweep-grid">
-        <div class="sweep-field"><label for="jogPWM">PWM / 255</label><input id="jogPWM" type="number" value="20" min="1" max="100" step="1"></div>
-        <div class="sweep-field"><label for="jogDuration">Pulse ms</label><input id="jogDuration" type="number" value="100" min="50" max="500" step="10"></div>
-      </div>
-      <div class="btn-row">
-        <button aria-label="Jog backward" id="jogMinus" class="btn secondary">◀</button>
-        <button aria-label="Jog forward" id="jogPlus" class="btn primary">▶</button>
-        <button id="jogStop" class="btn secondary">End pulse</button>
-      </div>
-      <div id="jogStatus" class="control-note"></div>
-      <div id="jogFeedback" class="control-note"></div>
-      <details class="help"><summary aria-label="More information">ⓘ</summary><div><a href="/guide.html">Read reference</a></div></details>
-
-    </details></section></details></div></details><section id="storage" class="tuning-card"><h2>Saved settings</h2><div id="profileControls" class="btn-row"></div><button id="pidSaveBtn" class="btn secondary" title="Saves firmware values to Arduino EEPROM; UI Apply also saves the host Markdown settings">Save EEPROM</button><div id="settingsFile" class="control-note">Applied tuning is saved automatically.</div></section></section><div id="commandStatus" role="status" class="control-note"></div><div id="statusBar">
+    </div></section></details></div></details><section id="storage" class="tuning-card"><h2>Saved settings</h2><div id="profileControls" class="btn-row"></div><button id="pidSaveBtn" class="btn secondary" title="Saves firmware values to Arduino EEPROM; UI Apply also saves the host Markdown settings">Save EEPROM</button><div id="settingsFile" class="control-note">Applied tuning is saved automatically.</div></section></section><div id="commandStatus" role="status" class="control-note"></div><div id="statusBar">
     <span id="sbSerial" class="monoval">USB --</span>
     <span class="sep">|</span>
     <span id="sbUDP" class="monoval">UDP --</span>

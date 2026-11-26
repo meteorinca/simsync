@@ -7,7 +7,8 @@
   tabs.forEach(tab=>{var selected=tab.dataset.view===name;tab.setAttribute('aria-selected',selected);tab.tabIndex=selected?0:-1;$(tab.dataset.view+'View').hidden=!selected;});
   var motorHost=name==='tuning'?$('motorToolbar'):name==='settings'?$('settingsMotor'):name==='setup'?$('setupMotor'): $('driveMotor');
   motorHost.append($('tuningMotors'));
-  if(name==='dashboard' || name==='tuning') (name==='tuning'?$('tuneScope'):$('dashboardView')).prepend($('scopePanel'));
+  if(name==='tuning') $('tuneScope').prepend($('scopePanel'));
+  else if(name==='dashboard') $('quickJogBar').after($('scopePanel'));
   ['scopeTools','tuningMetrics'].forEach(id=>$(id).hidden=name!=='tuning');
   Scope.resize();
  }
@@ -27,7 +28,7 @@
  $('scopeScale').addEventListener('change',function(){Scope.setScale(this.value);});
  $('scopeFreeze').addEventListener('click',function(){var frozen=Scope.freeze();this.textContent=frozen?'Resume display':'Freeze display';this.setAttribute('aria-pressed',frozen);});
  $('scopeImage').addEventListener('click',()=>Scope.saveImage());
- $('editTravel').addEventListener('click',()=>{view('setup');Setup.step(2);});
+ if($('editTravel'))$('editTravel').addEventListener('click',()=>{view('setup');Setup.step(2);});
  function loadFilters(){var s=SimSync.state(),m=s.motors[s.joint-1];if(!m?.filters_ready)return;$('filterLPF').value=m.lpf_hz;$('filterHPF').value=m.hpf_hz;filterJoint=s.joint;}
  $('filterRead').addEventListener('click',loadFilters);
  $('filterApply').addEventListener('click',()=>{
@@ -56,7 +57,8 @@
   var s=SimSync.state(),f=s.frame,m=s.motors[s.joint-1],live=!!(s.fresh&&f?.serial_ok&&m?.ready),moving=s.testBusy||signalPending||s.motors.some(v=>v.jogging);
   Array.from($('tuningMotors').children).forEach((b,i)=>{b.setAttribute('aria-pressed',s.joint===i+1);var v=s.motors[i];b.querySelector('span').textContent=!live?'':!v?.active?'Excluded':v.disabled?'Paused':'Running';});
   $('motorEnable').setAttribute('aria-pressed',!!m?.solo);
-  $('motorEnable').title=$('motorEnable').disabled?'Check travel, disable jog, and clear stop.':'Other motors are held while solo is on.';
+  $('motorEnable').textContent=m?.solo?'Exit Solo M'+s.joint:'Solo M'+s.joint;
+  $('motorEnable').title=$('motorEnable').disabled?'Check travel and clear stop.':'Other motors are held while solo is on.';
   gate('testNegative',!$('stepTestBtn').disabled,'Enable Solo to test this motor.');
   $('stepTestBtn').title=$('stepTestBtn').disabled?'Enable Solo to test this motor.':'';
   gate('filterApply',live&&m.filters_ready&&m.disabled&&!f.armed&&!m.diagnostics&&!moving,'Pause motors and disable jog to apply.');

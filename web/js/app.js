@@ -122,7 +122,11 @@
     setPill(els.pillSerial, f.serial_ok, 'Serial', f.serial_ok ? 'Connected' : 'Connecting…');
     setPill(els.pillUDP, f.udp_hz > 5, 'Telemetry', f.udp_hz > 5 ? f.udp_hz.toFixed(0) + 'Hz' : 'OFF');
     var solo=motors.findIndex(function(m){return m.solo;});
-    setPill(els.pillArmed, f.armed, f.estop?'Stopped':f.armed?(solo>=0?'Solo · M'+(solo+1):'Running'):'Paused', null, f.estop?'warn':f.armed?'ok':'warn');
+    var diag=motors.some(function(m){return m.diagnostics;});
+    setPill(els.pillArmed, f.armed, f.estop?'Stopped':f.armed?(solo>=0?'Solo · M'+(solo+1):'Running'):diag?'Jog':'Paused', null, f.estop?'warn':f.armed?'ok':'warn');
+    if (els.armBtn) els.armBtn.hidden = !!(f.estop || f.armed);
+    if (els.disarmBtn) els.disarmBtn.hidden = !!(f.estop || !f.armed);
+    if (els.estopClearBtn) els.estopClearBtn.hidden = !f.estop;
   }
 
   function setPill(el, active, label, suffix, forceClass) {
@@ -505,14 +509,30 @@
   $('diagnosticsToggle').addEventListener('change', function () {
     apiPost('/api/diagnostics', null, {enabled: this.checked});
   });
-  function openLoopJog(direction) {
+  function openLoopJog(direction, jointOverride) {
     if (jogPending) return;
+    var j = jointOverride || currentJoint;
+    if (j !== currentJoint) selectMotor(j);
     jogPending = true; updateControls();
-    apiPost('/api/jog', null, {joint: currentJoint, pwm: direction*Number($('jogPWM').value), duration_ms: Number($('jogDuration').value)})
+    apiPost('/api/jog', null, {joint: j, pwm: direction*Number($('jogPWM').value), duration_ms: Number($('jogDuration').value)})
+      .then(function (body) {
+        if (body && $('jogStatus')) {
+          $('jogStatus').textContent = 'Jogged M' + j + (direction > 0 ? ' ▶' : ' ◀');
+          $('jogStatus').style.color = 'var(--ok)';
+        } else if (!body && $('jogStatus')) {
+          $('jogStatus').textContent = $('commandStatus').textContent;
+          $('jogStatus').style.color = 'var(--red)';
+        }
+      })
       .finally(function () { jogPending = false; updateControls(); });
   }
   $('jogMinus').addEventListener('click', function () { openLoopJog(-1); });
   $('jogPlus').addEventListener('click', function () { openLoopJog(1); });
+  document.querySelectorAll('[data-jog-joint]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      openLoopJog(Number(btn.dataset.jogDir), Number(btn.dataset.jogJoint));
+    });
+  });
   $('jogStop').addEventListener('click', function () { apiGet('/api/jog/stop'); });
   $('testCancel').addEventListener('click', function () { apiGet('/api/steptest/cancel'); });
   function updateControls() {
@@ -522,17 +542,25 @@
     motors.forEach(function (motor,index) {
       $('j'+(index+1)+'State').textContent=!live || !motor.ready?'':!motor.active?'Not included':motor.disabled?'Disabled':'Enabled';
     });
-    var canJog = live && m && m.ready && m.diagnostics && m.jog_supported && m.configured && m.active && !testBusy && !jogging && !jogPending && !latestFrame.estop;
+    function motorCanJog(motor) {
+      return !!(live && motor && motor.ready && motor.jog_supported && motor.configured && motor.active && !testBusy && !jogging && !jogPending && !latestFrame.estop);
+    }
+    var canJog = motorCanJog(m);
     $('diagnosticsToggle').checked = !!(m && m.diagnostics);
     $('diagnosticsToggle').disabled = !live || !m || !m.jog_supported;
     $('jogMinus').disabled = !canJog; $('jogPlus').disabled = !canJog;
+    document.querySelectorAll('[data-jog-joint]').forEach(function (btn) {
+      var jm = motors[Number(btn.dataset.jogJoint) - 1];
+      btn.disabled = !motorCanJog(jm);
+    });
     $('jogStop').disabled = !live || !m || !m.jog_supported;
-    $('jogStatus').textContent = !m || !m.ready ? '' : !m.jog_supported ? 'Firmware update required' : jogging ? 'Pulse running' : 'Ready | PWM cap ' + m.pwm_max + '/255';
+    $('jogStatus').style.color = '';
+    $('jogStatus').textContent = !m || !m.ready ? 'Waiting for controller…' : !m.jog_supported ? 'Firmware update required' : latestFrame.estop ? 'Clear STOP to jog' : jogging ? 'Pulse running…' : '1-click jog ready (auto-pauses PID) · PWM cap ' + m.pwm_max + '/255';
     var solo = motors.some(function (motor) { return motor.solo; });
     var move = live && m && m.ready && m.configured && m.active && !m.disabled && latestFrame.armed && !testBusy && (!solo || m.solo);
     [els.manGoBtn, els.centerBtn, els.stepMinus5, els.stepPlus5, els.stepMinus10, els.stepPlus10, els.stepTestBtn].forEach(function (b) { b.disabled = !move; });
     $('limitsApply').disabled = !live || !m || !m.ready || latestFrame.armed || testBusy || jogging;
-    $('motorEnable').disabled = !live || !m || !m.ready || !m.jog_supported || m.diagnostics || !m.configured || !m.active || latestFrame.estop || testBusy || jogging;
+    $('motorEnable').disabled = !live || !m || !m.ready || !m.jog_supported || !m.configured || !m.active || latestFrame.estop || testBusy || jogging;
     els.pidSendBtn.disabled = !live || !m || !m.ready || testBusy || jogging;
     els.pidSaveBtn.disabled = !live || latestFrame.armed || testBusy || jogging;
     if (!live) { setPill(els.pillSerial, false, 'Serial', 'Connecting…'); loadedJoint = 0; }

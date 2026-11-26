@@ -295,6 +295,11 @@ func main() {
 			if serialPort_ == nil {
 				return fmt.Errorf("serial disabled")
 			}
+			if serialPort_.Diagnostics() {
+				if err := serialPort_.SetDiagnostics(false); err != nil {
+					return err
+				}
+			}
 			if err := serialPort_.SetMotorFilters(s); err != nil {
 				return err
 			}
@@ -314,6 +319,11 @@ func main() {
 			}
 			armed = false
 			manualMode = true
+			if serialPort_.Diagnostics() {
+				if err := serialPort_.SetDiagnostics(false); err != nil {
+					return err
+				}
+			}
 			if err := serialPort_.EnableOnly(j); err != nil {
 				return err
 			}
@@ -329,6 +339,11 @@ func main() {
 			}
 			if serialPort_ == nil {
 				return fmt.Errorf("serial disabled")
+			}
+			if serialPort_.Diagnostics() {
+				if err := serialPort_.SetDiagnostics(false); err != nil {
+					return err
+				}
 			}
 			if err := serialPort_.TuneController(s); err != nil {
 				return err
@@ -432,6 +447,11 @@ func main() {
 			}
 			armed = false
 			manualMode = true
+			if !serialPort_.Diagnostics() {
+				if err := serialPort_.SetDiagnostics(true); err != nil {
+					return err
+				}
+			}
 			return serialPort_.Jog(j, pwm, ms)
 		},
 		Diagnostics: func(enabled bool) error {
@@ -486,6 +506,11 @@ func main() {
 			if state {
 				if stepRunner.IsRunning() {
 					return fmt.Errorf("wait for test to finish")
+				}
+				if serialPort_.Diagnostics() {
+					if err := serialPort_.SetDiagnostics(false); err != nil {
+						return err
+					}
 				}
 				if err := serialPort_.EnableIncluded(); err != nil {
 					return err

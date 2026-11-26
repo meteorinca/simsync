@@ -37,7 +37,7 @@ func (p *Port) jogLocked(j, pwm, durationMS int, low, high float32) error {
 		return fmt.Errorf("configure motor and wait for fresh feedback")
 	}
 	if actual <= s.Min+4 || actual >= s.Max-4 {
-		return fmt.Errorf("feedback must be at least four counts inside host bounds")
+		return fmt.Errorf("M%d feedback (%.0f) is outside host bounds (%.0f–%.0f)", j, actual, s.Min+4, s.Max-4)
 	}
 	if pwm > s.PWMMax || -pwm > s.PWMMax {
 		return fmt.Errorf("jog exceeds motor PWM max %d", s.PWMMax)

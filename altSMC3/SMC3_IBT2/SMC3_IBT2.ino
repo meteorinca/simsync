@@ -287,7 +287,7 @@ uint8_t  pidProcessDivider     = 1;
 uint8_t  pidProcessCounter     = 0;
 uint8_t  serialFeedbackCounter = 0;
 uint8_t  serialFeedbackMotor   = 0;     // 0 = off, 1..3 = stream motor 1..3 every 20 ms
-uint8_t  timer1FreqkHz         = 25;    // Motor 2 (D9/D10) PWM frequency in kHz
+uint8_t  timer1FreqkHz         = 8;     // Motor 2 (D9/D10) PWM frequency in kHz (8 kHz gives reliable BTS7960 low-PWM drive)
 uint8_t  timer2FreqkHz         = 31;    // Motor 3 (D3/D11) PWM frequency (>=15 -> 31.25 kHz, else 3.9 kHz)
 
 uint32_t loopCount             = 0;
@@ -305,13 +305,15 @@ uint8_t  rxBuf[4]              = {0};
 // ===============================================================================================================
 
 void initPWMTimer1(uint8_t freqkHz) {
-  uint8_t clamped = constrain(freqkHz, 1, 40);
-  // Mode 8: PWM, Phase and Frequency Correct, TOP = ICR1, prescaler = 1
-  uint8_t wgm = 8;
-  TCCR1A = (TCCR1A & B11111100) | (wgm & B00000011);
-  TCCR1B = (TCCR1B & B11100111) | ((wgm & B00001100) << 1);
-  TCCR1B = (TCCR1B & B11111000) | 0x01;
+  uint8_t clamped = constrain(freqkHz, 1, 25);  // BTS7960 max rated PWM is 25 kHz
+  // Clean reset of Timer1, then Mode 8: PWM Phase & Frequency Correct, TOP = ICR1, prescaler = 1
+  TCCR1A = 0;
+  TCCR1B = 0;
+  TCNT1  = 0;
+  OCR1A  = 0;
+  OCR1B  = 0;
   ICR1   = (uint16_t)((F_CPU / 2UL) / ((uint32_t)clamped * 1000UL));
+  TCCR1B = _BV(WGM13) | _BV(CS10);
 }
 
 void initPWMTimer2(uint8_t freqkHz) {
@@ -333,6 +335,7 @@ void writeTimer1PWM(uint8_t pin, uint8_t duty) {
     return;
   }
   uint16_t ocr = (uint16_t)(((uint32_t)duty * ICR1) / 255UL);
+  if (ocr == 0) ocr = 1;
   if (pin == 9) {
     OCR1A = ocr;
     sbi(TCCR1A, COM1A1);
