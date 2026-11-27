@@ -81,6 +81,9 @@
   var lastFrameAt = 0;
   var testBusy = false;
   var jogPending = false;
+  var jogNote = '';
+  var jogNoteColor = '';
+  var jogNoteUntil = 0;
   var lastResults = [];
 
   /* ---- WebSocket ---- */
@@ -528,12 +531,14 @@
     jogPending = true; updateControls();
     apiPost('/api/jog', null, {joint: j, pwm: direction*Number($('jogPWM').value), duration_ms: Number($('jogDuration').value)})
       .then(function (body) {
-        if (body && $('jogStatus')) {
-          $('jogStatus').textContent = 'Jogged M' + j + (direction > 0 ? ' ▶' : ' ◀');
-          $('jogStatus').style.color = 'var(--ok)';
-        } else if (!body && $('jogStatus')) {
-          $('jogStatus').textContent = $('commandStatus').textContent;
-          $('jogStatus').style.color = 'var(--red)';
+        if (body) {
+          jogNote = 'Jogged M' + j + (direction > 0 ? ' ▶' : ' ◀');
+          jogNoteColor = 'var(--ok)';
+          jogNoteUntil = Date.now() + 2500;
+        } else {
+          jogNote = $('commandStatus').textContent;
+          jogNoteColor = 'var(--red)';
+          jogNoteUntil = Date.now() + 6000;
         }
       })
       .finally(function () { jogPending = false; updateControls(); });
@@ -545,7 +550,7 @@
       openLoopJog(Number(btn.dataset.jogDir), Number(btn.dataset.jogJoint));
     });
   });
-  $('jogStop').addEventListener('click', function () { apiGet('/api/jog/stop'); });
+  $('jogStop').addEventListener('click', function () { jogNoteUntil = 0; apiGet('/api/jog/stop'); });
   $('testCancel').addEventListener('click', function () { apiGet('/api/steptest/cancel'); });
   function updateControls() {
     var live = latestFrame && latestFrame.serial_ok && Date.now() - lastFrameAt < 1000;
@@ -566,8 +571,17 @@
       btn.disabled = !motorCanJog(jm);
     });
     $('jogStop').disabled = !live || !m || !m.jog_supported;
-    $('jogStatus').style.color = '';
-    $('jogStatus').textContent = !m || !m.ready ? '' : !m.jog_supported ? 'Update FW' : latestFrame.estop ? 'STOP latched' : jogging ? 'Jogging…' : '';
+    var baseStatus = !m || !m.ready ? '' : !m.jog_supported ? 'Update FW' : latestFrame.estop ? 'STOP latched' : jogging ? 'Jogging…' : '';
+    if (baseStatus) {
+      $('jogStatus').style.color = '';
+      $('jogStatus').textContent = baseStatus;
+    } else if (Date.now() < jogNoteUntil && jogNote) {
+      $('jogStatus').style.color = jogNoteColor;
+      $('jogStatus').textContent = jogNote;
+    } else {
+      $('jogStatus').style.color = '';
+      $('jogStatus').textContent = '';
+    }
     var solo = motors.some(function (motor) { return motor.solo; });
     var move = live && m && m.ready && m.configured && m.active && !m.disabled && latestFrame.armed && !testBusy && (!solo || m.solo);
     [els.manGoBtn, els.centerBtn, els.stepMinus5, els.stepPlus5, els.stepMinus10, els.stepPlus10, els.stepTestBtn].forEach(function (b) { b.disabled = !move; });

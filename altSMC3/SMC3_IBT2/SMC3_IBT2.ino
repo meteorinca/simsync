@@ -306,14 +306,18 @@ uint8_t  rxBuf[4]              = {0};
 
 void initPWMTimer1(uint8_t freqkHz) {
   uint8_t clamped = constrain(freqkHz, 1, 25);  // BTS7960 max rated PWM is 25 kHz
-  // Clean reset of Timer1, then Mode 8: PWM Phase & Frequency Correct, TOP = ICR1, prescaler = 1
+  // ATmega328P §16.11.7: ICR1 is read-only unless WGM13:0 already selects an ICR1-TOP mode.
+  // Enter Mode 8 (PWM Phase & Frequency Correct, TOP = ICR1) with clock stopped first, then set ICR1.
+  uint8_t sreg = SREG;
+  cli();
   TCCR1A = 0;
-  TCCR1B = 0;
+  TCCR1B = _BV(WGM13);
+  ICR1   = (uint16_t)((F_CPU / 2UL) / ((uint32_t)clamped * 1000UL));
   TCNT1  = 0;
   OCR1A  = 0;
   OCR1B  = 0;
-  ICR1   = (uint16_t)((F_CPU / 2UL) / ((uint32_t)clamped * 1000UL));
   TCCR1B = _BV(WGM13) | _BV(CS10);
+  SREG   = sreg;
 }
 
 void initPWMTimer2(uint8_t freqkHz) {
@@ -334,7 +338,9 @@ void writeTimer1PWM(uint8_t pin, uint8_t duty) {
     digitalWrite(pin, HIGH);
     return;
   }
-  uint16_t ocr = (uint16_t)(((uint32_t)duty * ICR1) / 255UL);
+  uint16_t top = ICR1;
+  if (top == 0) top = 1000;
+  uint16_t ocr = (uint16_t)(((uint32_t)duty * top) / 255UL);
   if (ocr == 0) ocr = 1;
   if (pin == 9) {
     OCR1A = ocr;
@@ -526,8 +532,10 @@ void readEEPROM() {
 
   uint8_t savedDivider   = EEPROM.read(50);
   pidProcessDivider      = constrain(savedDivider, 1, 10);
-  timer1FreqkHz          = EEPROM.read(51);
-  timer2FreqkHz          = EEPROM.read(52);
+  uint8_t savedT1        = EEPROM.read(51);
+  timer1FreqkHz          = (savedT1 >= 5 && savedT1 <= 35) ? savedT1 : 8;
+  uint8_t savedT2        = EEPROM.read(52);
+  timer2FreqkHz          = (savedT2 == 4 || savedT2 == 31) ? savedT2 : 31;
 }
 
 // ===============================================================================================================
