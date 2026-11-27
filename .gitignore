@@ -49,17 +49,37 @@ pnpm-debug.log*
 /mediaexamples/
 
 # ==============================================================================
-# SMC3 / Firmware / Embedded Builds
+# SMC3 / ESP-IDF / Embedded Firmware Builds
 # ==============================================================================
 /SMC3/**/build/
 /SMC3/**/*.hex
 /SMC3/**/*.elf
 /SMC3/**/*.eep
 /SMC3/**/*.map
+/altSMC3/**/build/
+
+# ESP-IDF generated build output & local config (keep sdkconfig.defaults tracked!)
+/esp32s3-motion/firmware/build/
+/esp32s3-motion/firmware/managed_components/
+/esp32s3-motion/firmware/dependencies.lock
+/esp32s3-motion/firmware/sdkconfig
+/esp32s3-motion/firmware/sdkconfig.old
+/esp32s3-motion/firmware/sdkconfig.ci
+/esp32s3-motion/simsync-s3
+/esp32s3-motion/simsync-s3.exe
+/esp32s3-motion/profile.json
+/esp32s3-motion/host/profile.json
+**/build/
 *.hex
 *.elf
 *.eep
 *.map
+*.bin
+*.obj
+*.o
+*.d
+*.a
+compile_commands.json
 
 # ==============================================================================
 # Environment & Local Secrets

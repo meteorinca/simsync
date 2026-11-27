@@ -1,0 +1,32 @@
+# Target: ESP32-S3
+CONFIG_IDF_TARGET="esp32s3"
+
+# CPU @ max 240 MHz, compiler optimized for speed (-O2)
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# FreeRTOS 1000 Hz tick for responsive USB/host comms on Core 0
+CONFIG_FREERTOS_HZ=1000
+
+# CRITICAL FOR NOISE-FREE ADC: Disable WiFi & Bluetooth completely!
+# RF TX bursts were the #1 source of 26-count ADC rail noise on ESP32-S3.
+CONFIG_ESP_WIFI_ENABLED=n
+CONFIG_BT_ENABLED=n
+
+# Keep ESP-IDF console off the primary USB Serial/JTAG binary link, OR route logs to UART0
+# so the native USB Serial/JTAG port stays 100% pure binary for SMC3 / Turbo v2 frames!
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# IRAM/cache safety for deterministic Core 1 interrupts (gptimer + ADC DMA + MCPWM)
+CONFIG_GPTIMER_ISR_CACHE_SAFE=y
+CONFIG_ADC_CONTINUOUS_ISR_IRAM_SAFE=y
+CONFIG_MCPWM_ISR_CACHE_SAFE=y
+
+# Watchdog: monitor idle on Core 0, don't false-trip on high-priority Core 1 RT loop
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
+# Partition table with generous NVS for persistent tuning profiles
+CONFIG_PARTITION_TABLE_SINGLE_APP=y

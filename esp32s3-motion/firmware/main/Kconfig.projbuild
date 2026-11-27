@@ -1,0 +1,116 @@
+menu "SimSync ESP32-S3 Motion Controller"
+
+    config SIMSYNC_ACTIVE_DOF
+        int "Default active motors (2 for 2DOF, 3 for 3DOF)"
+        range 2 3
+        default 2
+        help
+            Number of active motors enabled by default. All 3 channels are always
+            sampled and ready in hardware; M3 can be enabled at runtime anytime.
+
+    config SIMSYNC_PID_FREQ_HZ
+        int "PID control loop frequency (Hz)"
+        range 1000 4000
+        default 2000
+        help
+            Deterministic Core 1 gptimer PID loop rate. 2000 Hz gives 12 DMA ADC
+            oversamples per motor per tick at 72 kSPS (~+1.8 bits ENOB).
+
+    config SIMSYNC_ADC_SAMPLE_RATE_HZ
+        int "Total ADC1 continuous DMA sample rate (Hz)"
+        range 24000 81000
+        default 72000
+        help
+            Total GDMA ADC1 scan rate split across 3 motor channels.
+            72000 Hz = 24000 samples/sec per motor (12 samples per 2 kHz PID tick).
+
+    config SIMSYNC_ADC_HW_IIR_2DOF
+        bool "Enable ESP32-S3 silicon ADC IIR filters on M1 & M2 (2DOF mode)"
+        default n
+        help
+            ESP32-S3 has 2 hardware digital IIR filter units inside ADC1.
+            Enable for extra hardware smoothing on 2DOF (M1/M2). Leave off for
+            identical phase response across all 3 motors (M1/M2/M3) using software
+            trimmed-mean + biquad LPF.
+
+    config SIMSYNC_PWM_FREQ_HZ
+        int "Default MCPWM frequency (Hz, BTS7960 max 25000)"
+        range 1000 25000
+        default 20000
+        help
+            Center-aligned symmetric MCPWM frequency. 20000 Hz is ultrasonic
+            (completely silent) and within BTS7960 25 kHz rating.
+
+    menu "Hardware Pinout (ESP32-S3 -> 3x IBT-2 / BTS7960)"
+        comment "ADC1 GPIOs 4,5,6 are safe (no USB/strapping conflict). NEVER feed 5V to ADC!"
+
+        config SIMSYNC_M1_RPWM_GPIO
+            int "Motor 1 RPWM GPIO"
+            default 10
+        config SIMSYNC_M1_LPWM_GPIO
+            int "Motor 1 LPWM GPIO"
+            default 11
+        config SIMSYNC_M1_EN_GPIO
+            int "Motor 1 EN (R_EN + L_EN tied) GPIO"
+            default 12
+        config SIMSYNC_M1_ADC_CH
+            int "Motor 1 ADC1 Channel (3=GPIO4)"
+            range 0 9
+            default 3
+        config SIMSYNC_M1_INVERT_POT
+            bool "Invert Motor 1 pot direction"
+            default n
+        config SIMSYNC_M1_INVERT_DIR
+            bool "Invert Motor 1 drive direction"
+            default n
+
+        config SIMSYNC_M2_RPWM_GPIO
+            int "Motor 2 RPWM GPIO"
+            default 13
+        config SIMSYNC_M2_LPWM_GPIO
+            int "Motor 2 LPWM GPIO"
+            default 14
+        config SIMSYNC_M2_EN_GPIO
+            int "Motor 2 EN (R_EN + L_EN tied) GPIO"
+            default 21
+        config SIMSYNC_M2_ADC_CH
+            int "Motor 2 ADC1 Channel (4=GPIO5)"
+            range 0 9
+            default 4
+        config SIMSYNC_M2_INVERT_POT
+            bool "Invert Motor 2 pot direction"
+            default y
+        config SIMSYNC_M2_INVERT_DIR
+            bool "Invert Motor 2 drive direction"
+            default n
+
+        config SIMSYNC_M3_RPWM_GPIO
+            int "Motor 3 RPWM GPIO"
+            default 39
+        config SIMSYNC_M3_LPWM_GPIO
+            int "Motor 3 LPWM GPIO"
+            default 40
+        config SIMSYNC_M3_EN_GPIO
+            int "Motor 3 EN (R_EN + L_EN tied) GPIO"
+            default 41
+        config SIMSYNC_M3_ADC_CH
+            int "Motor 3 ADC1 Channel (5=GPIO6)"
+            range 0 9
+            default 5
+        config SIMSYNC_M3_INVERT_POT
+            bool "Invert Motor 3 pot direction"
+            default n
+        config SIMSYNC_M3_INVERT_DIR
+            bool "Invert Motor 3 drive direction"
+            default n
+
+        config SIMSYNC_ESTOP_GPIO
+            int "Hardware E-Stop GPIO (active LOW with pull-up, -1 to disable)"
+            range -1 48
+            default -1
+            help
+                Optional physical NC E-Stop switch wired to GND. Connects directly
+                to ESP32-S3 MCPWM hardware fault input to cut PWM in nanoseconds.
+    endmenu
+
+endmenu

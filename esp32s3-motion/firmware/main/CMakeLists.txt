@@ -1,0 +1,19 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "adc_engine.c"
+        "mcpwm_drive.c"
+        "pid_control.c"
+        "protocol.c"
+        "nvs_store.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        esp_adc
+        esp_driver_mcpwm
+        esp_driver_gptimer
+        esp_driver_gpio
+        esp_driver_usb_serial_jtag
+        nvs_flash
+        esp_timer
+)

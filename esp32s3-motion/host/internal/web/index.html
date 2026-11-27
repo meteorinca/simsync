@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SimSync ESP32-S3 · Live Motion &amp; Noise Tuner</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0f1217; --s1: #161b22; --s2: #1f2630; --bd: #2e3746;
+    --tx: #e6edf3; --tx2: #9aa7b8; --ac: #38bdf8;
+    --ok: #34d399; --warn: #fbbf24; --err: #f87171;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--tx); font: 13px/1.45 system-ui, -apple-system, sans-serif; padding: 14px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 14px; background: var(--s1); border: 1px solid var(--bd); border-radius: 10px; margin-bottom: 12px; }
+  header h1 { font-size: 16px; font-weight: 600; margin-right: auto; }
+  .chip { padding: 4px 10px; border-radius: 999px; font-size: 12px; background: var(--s2); border: 1px solid var(--bd); font-family: ui-monospace, monospace; }
+  .chip.ok { border-color: var(--ok); color: var(--ok); }
+  .chip.warn { border-color: var(--warn); color: var(--warn); }
+  .chip.err { border-color: var(--err); color: var(--err); }
+  button { cursor: pointer; padding: 7px 13px; border-radius: 7px; border: 1px solid var(--bd); background: var(--s2); color: var(--tx); font-weight: 500; font-size: 13px; }
+  button:hover { border-color: var(--ac); }
+  button.primary { background: var(--ac); color: #08121a; border-color: var(--ac); font-weight: 600; }
+  button.danger { background: var(--err); color: #190707; border-color: var(--err); font-weight: 700; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 12px; }
+  .card { background: var(--s1); border: 1px solid var(--bd); border-radius: 10px; padding: 12px 14px; }
+  .card h2 { font-size: 13px; color: var(--tx2); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+  .mono { font-family: ui-monospace, Consolas, monospace; }
+  .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .metric { background: var(--s2); border: 1px solid var(--bd); border-radius: 8px; padding: 8px 10px; }
+  .metric .lbl { font-size: 11px; color: var(--tx2); }
+  .metric .val { font-size: 17px; font-weight: 600; margin-top: 2px; }
+  .row { display: grid; grid-template-columns: 125px 1fr 56px; align-items: center; gap: 8px; margin-bottom: 7px; }
+  input[type=range] { width: 100%; accent-color: var(--ac); }
+  input[type=number], select { background: var(--s2); color: var(--tx); border: 1px solid var(--bd); border-radius: 6px; padding: 4px 6px; font-family: ui-monospace, monospace; width: 100%; }
+  canvas { width: 100%; height: 220px; background: #0a0d12; border: 1px solid var(--bd); border-radius: 8px; display: block; }
+  .btn-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .full { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SimSync ESP32-S3 <span style="color:var(--tx2);font-weight:400">· 12-bit GDMA + 20kHz MCPWM</span></h1>
+  <span id="cSerial" class="chip err">USB: Disconnected</span>
+  <span id="cUDP" class="chip">UDP: Idle</span>
+  <span id="cRT" class="chip">Loop: -- µs</span>
+  <button class="primary" onclick="post('/api/enable')">Hold &amp; Enable</button>
+  <button onclick="post('/api/center')">Center</button>
+  <button onclick="post('/api/save-nvs')">Save NVS</button>
+  <button class="danger" onclick="post('/api/stop')">■ STOP (Esc)</button>
+</header>
+
+<div class="grid">
+  <div class="card full">
+    <h2>
+      <span>Live 12-Bit Oscilloscope (0–4095)</span>
+      <span class="mono" style="font-size:12px">
+        <select id="scopeMotor" style="width:auto;display:inline-block">
+          <option value="0">Motor 1 (Front-L)</option>
+          <option value="1">Motor 2 (Front-R)</option>
+          <option value="2">Motor 3 (Rear)</option>
+        </select>
+        &nbsp; <span style="color:#38bdf8">■ Target</span> &nbsp; <span style="color:#a78bfa">■ Actual</span> &nbsp; <span style="color:#34d399">■ Duty</span>
+      </span>
+    </h2>
+    <canvas id="scope" width="1100" height="220"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>ESP32-S3 ADC Noise Floor &amp; Live State <button onclick="post('/api/reset-stats')" style="padding:2px 8px;font-size:11px">Reset Peaks</button></h2>
+    <div id="motorStats" class="metrics"></div>
+    <div class="btn-bar" style="margin-top:12px">
+      <button onclick="nudge(-80)">Nudge −80</button>
+      <button onclick="nudge(+80)">Nudge +80</button>
+      <button onclick="sineTest()">Sine Test (±120)</button>
+      <button onclick="post('/api/clear-estop')">Clear E-Stop</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>ESP32-S3 Core 1 PID &amp; Biquad LPF</h2>
+    <div class="row"><label>Motor</label><select id="gMotor"><option value="0">M1 (Front-L)</option><option value="1">M2 (Front-R)</option><option value="2">M3 (Rear)</option></select><span></span></div>
+    <div class="row"><label>Kp</label><input id="gKp" type="range" min="0" max="80" step="0.5" value="20"><span class="mono" id="vKp">20.0</span></div>
+    <div class="row"><label>Ki</label><input id="gKi" type="range" min="0" max="10" step="0.05" value="0"><span class="mono" id="vKi">0.00</span></div>
+    <div class="row"><label>Kd</label><input id="gKd" type="range" min="0" max="5" step="0.05" value="0.4"><span class="mono" id="vKd">0.40</span></div>
+    <div class="row"><label>Feedforward Kff</label><input id="gKff" type="range" min="0" max="30" step="0.5" value="0"><span class="mono" id="vKff">0.0</span></div>
+    <div class="row"><label>Feedback LPF Hz</label><input id="gLpf" type="range" min="0" max="200" step="2" value="80"><span class="mono" id="vLpf">80</span></div>
+    <div class="row"><label>Deriv HPF Hz</label><input id="gHpf" type="range" min="0" max="40" step="1" value="0"><span class="mono" id="vHpf">0</span></div>
+    <div class="btn-bar"><button class="primary" onclick="applyGains()">Apply PID to ESP32-S3</button></div>
+  </div>
+
+  <div class="card">
+    <h2>Go Classical Washout Engine (2DOF / 3DOF)</h2>
+    <div class="row"><label>DOF Mode</label>
+      <select id="wDOF"><option value="2">2DOF (M1 + M2)</option><option value="3">3DOF (M1 + M2 + M3)</option></select><span></span>
+    </div>
+    <div class="row"><label>Master Gain</label><input id="wMaster" type="range" min="0" max="1.2" step="0.02" value="0.65"><span class="mono" id="vMaster">0.65</span></div>
+    <div class="row"><label>Surge HPF Hz</label><input id="wSurgeHP" type="range" min="0.1" max="3.0" step="0.05" value="0.65"><span class="mono" id="vSurgeHP">0.65</span></div>
+    <div class="row"><label>Surge Tilt LPF Hz</label><input id="wSurgeLP" type="range" min="0.2" max="5.0" step="0.05" value="1.20"><span class="mono" id="vSurgeLP">1.20</span></div>
+    <div class="row"><label>Sway HPF Hz</label><input id="wSwayHP" type="range" min="0.1" max="3.0" step="0.05" value="0.65"><span class="mono" id="vSwayHP">0.65</span></div>
+    <div class="row"><label>Heave Gain</label><input id="wHeave" type="range" min="0" max="1.0" step="0.02" value="0.40"><span class="mono" id="vHeave">0.40</span></div>
+    <div class="row"><label>Soft-Knee tanh</label><input id="wKnee" type="range" min="0.2" max="2.5" step="0.05" value="1.25"><span class="mono" id="vKnee">1.25</span></div>
+    <div class="row"><label>Crank Linearize</label>
+      <select id="wCrank"><option value="true">Enabled (asin)</option><option value="false">Linear Direct</option></select><span></span>
+    </div>
+    <div class="btn-bar"><button class="primary" onclick="applyWashout()">Apply &amp; Save Washout</button></div>
+  </div>
+</div>
+
+<script>
+let washoutCfg = null;
+let lastState = null;
+const hist = { target: [], actual: [], duty: [] };
+const MAX_PTS = 300;
+
+async function post(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : '{}'
+  });
+  if (!res.ok) alert(await res.text());
+}
+
+function bindRange(id, labelId, digits) {
+  const el = document.getElementById(id), lbl = document.getElementById(labelId);
+  const upd = () => lbl.textContent = Number(el.value).toFixed(digits);
+  el.addEventListener('input', upd); upd();
+}
+bindRange('gKp','vKp',1); bindRange('gKi','vKi',2); bindRange('gKd','vKd',2);
+bindRange('gKff','vKff',1); bindRange('gLpf','vLpf',0); bindRange('gHpf','vHpf',0);
+bindRange('wMaster','vMaster',2); bindRange('wSurgeHP','vSurgeHP',2);
+bindRange('wSurgeLP','vSurgeLP',2); bindRange('wSwayHP','vSwayHP',2);
+bindRange('wHeave','vHeave',2); bindRange('wKnee','vKnee',2);
+
+async function loadWashout() {
+  const r = await fetch('/api/washout');
+  washoutCfg = await r.json();
+  document.getElementById('wDOF').value = String(washoutCfg.dof_mode);
+  document.getElementById('wMaster').value = washoutCfg.master_gain;
+  document.getElementById('wSurgeHP').value = washoutCfg.surge_hp_hz;
+  document.getElementById('wSurgeLP').value = washoutCfg.surge_lp_hz;
+  document.getElementById('wSwayHP').value = washoutCfg.sway_hp_hz;
+  document.getElementById('wHeave').value = washoutCfg.heave_gain;
+  document.getElementById('wKnee').value = washoutCfg.soft_knee;
+  document.getElementById('wCrank').value = String(washoutCfg.crank_linearize);
+  ['wMaster','wSurgeHP','wSurgeLP','wSwayHP','wHeave','wKnee'].forEach(id => document.getElementById(id).dispatchEvent(new Event('input')));
+}
+loadWashout();
+
+function applyWashout() {
+  if (!washoutCfg) return;
+  washoutCfg.dof_mode = Number(document.getElementById('wDOF').value);
+  washoutCfg.master_gain = Number(document.getElementById('wMaster').value);
+  washoutCfg.surge_hp_hz = Number(document.getElementById('wSurgeHP').value);
+  washoutCfg.surge_lp_hz = Number(document.getElementById('wSurgeLP').value);
+  washoutCfg.sway_hp_hz = Number(document.getElementById('wSwayHP').value);
+  washoutCfg.heave_gain = Number(document.getElementById('wHeave').value);
+  washoutCfg.soft_knee = Number(document.getElementById('wKnee').value);
+  washoutCfg.crank_linearize = document.getElementById('wCrank').value === 'true';
+  post('/api/washout', washoutCfg);
+}
+
+function applyGains() {
+  post('/api/gains', {
+    motor: Number(document.getElementById('gMotor').value),
+    kp: Number(document.getElementById('gKp').value),
+    ki: Number(document.getElementById('gKi').value),
+    kd: Number(document.getElementById('gKd').value),
+    kff: Number(document.getElementById('gKff').value),
+    lpf_hz: Number(document.getElementById('gLpf').value),
+    hpf_hz: Number(document.getElementById('gHpf').value),
+    ks: 1
+  });
+}
+
+function nudge(delta) {
+  if (!lastState) return;
+  const m = Number(document.getElementById('scopeMotor').value);
+  const cur = lastState.telemetry.motors[m].actual_12;
+  const nxt = Math.max(200, Math.min(3895, cur + delta));
+  post('/api/target', { motor: m, target_12: nxt });
+}
+
+function sineTest() {
+  const m = Number(document.getElementById('scopeMotor').value);
+  post('/api/sine', { motor: m, amp_12: 120, freq_hz: 0.75, cycles: 2 });
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') post('/api/stop'); });
+
+function drawScope() {
+  const c = document.getElementById('scope');
+  const ctx = c.getContext('2d');
+  const w = c.width, h = c.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.strokeStyle = '#1e2633'; ctx.lineWidth = 1;
+  for (let i = 1; i < 4; i++) { const y = (h/4)*i; ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
+  const plot = (arr, color, minV, maxV) => {
+    if (arr.length < 2) return;
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+    for (let i = 0; i < arr.length; i++) {
+      const x = (i / (MAX_PTS - 1)) * w;
+      const y = h - ((arr[i] - minV) / (maxV - minV)) * h;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  };
+  plot(hist.duty, '#34d399', -1000, 1000);
+  plot(hist.target, '#38bdf8', 0, 4095);
+  plot(hist.actual, '#a78bfa', 0, 4095);
+}
+
+function connectWS() {
+  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+  ws.onmessage = ev => {
+    const s = JSON.parse(ev.data);
+    lastState = s;
+    const t = s.telemetry;
+
+    const cSer = document.getElementById('cSerial');
+    cSer.textContent = t.connected ? `USB: ${t.port} (${t.protocol})` : 'USB: Disconnected';
+    cSer.className = 'chip ' + (t.connected ? 'ok' : 'err');
+
+    const cUDP = document.getElementById('cUDP');
+    cUDP.textContent = s.udp_live ? `UDP: ${s.udp_rate_hz.toFixed(0)} Hz` : (s.bench_mode ? 'Bench Mode' : 'UDP: Waiting');
+    cUDP.className = 'chip ' + (s.udp_live ? 'ok' : 'warn');
+
+    const cRT = document.getElementById('cRT');
+    cRT.textContent = `Core1: ${t.loop_exec_us}µs (pk ${t.loop_max_us}µs, jit ${t.loop_jitter_us}µs)`;
+    cRT.className = 'chip ' + (t.fault_flags ? 'err' : 'ok');
+
+    const mIdx = Number(document.getElementById('scopeMotor').value);
+    const ms = t.motors[mIdx];
+    hist.target.push(ms.target_12); hist.actual.push(ms.actual_12); hist.duty.push(ms.duty);
+    if (hist.target.length > MAX_PTS) { hist.target.shift(); hist.actual.shift(); hist.duty.shift(); }
+    drawScope();
+
+    const statsEl = document.getElementById('motorStats');
+    statsEl.innerHTML = t.motors.map((m, idx) => `
+      <div class="metric">
+        <div class="lbl">M${idx+1} ${m.disabled ? '<span style="color:var(--warn)">OFF</span>' : '<span style="color:var(--ok)">ON</span>'} · ${m.adc_samples}x DMA</div>
+        <div class="val mono">${m.actual_12} <span style="font-size:12px;color:var(--tx2)">/ ${m.target_12}</span></div>
+        <div class="lbl mono">Noise: ${m.noise_rms_12.toFixed(2)} RMS · ${m.noise_p2p_12} p2p</div>
+        <div class="lbl mono">Duty: ${m.duty}</div>
+      </div>
+    `).join('');
+  };
+  ws.onclose = () => setTimeout(connectWS, 1000);
+}
+connectWS();
+</script>
+</body>
+</html>
